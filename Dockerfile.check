@@ -1,0 +1,35 @@
+# The plugin's tests, lint and types, in a container, because the host has no
+# toolchain to rely on (meridian-python and meridian-snaptrade do the same).
+ARG PYTHON_VERSION=3.12
+
+FROM python:${PYTHON_VERSION}-slim AS base
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+WORKDIR /w
+COPY pyproject.toml ./
+COPY src src
+RUN --mount=type=cache,target=/root/.cache/pip pip install -e ".[dev]"
+COPY tests tests
+
+# Run by `make test`, `make live` and `make sample` with `docker run`.
+FROM base AS test
+
+# meridian, as check.yaml installs it: its own installer, from the release's
+# tag, which checks the binary against the checksum published beside it.
+FROM python:${PYTHON_VERSION}-slim AS meridian
+ARG MERIDIAN_VERSION
+RUN test -n "${MERIDIAN_VERSION}" \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && curl -fsSL "https://raw.githubusercontent.com/open-meridian/meridian-cli/v${MERIDIAN_VERSION}/install.sh" \
+    | MERIDIAN_VERSION="${MERIDIAN_VERSION}" MERIDIAN_INSTALL_DIR=/usr/local/bin sh \
+ && /usr/local/bin/meridian --version
+
+# Run by `make check` with `docker run`, the repository mounted over /w.
+FROM base AS check
+COPY --from=meridian /usr/local/bin/meridian /usr/local/bin/meridian
+
+FROM base AS lint
+RUN python -m ruff check src tests \
+ && python -m ruff format --check src tests \
+ && python -m mypy

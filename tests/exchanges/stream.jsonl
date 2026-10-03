@@ -1,0 +1,5 @@
+{"channel":"status","type":"update","data":[{"version":"2.0.10","system":"online","api_version":"v2","connection_id":1234567890123456789}]}
+{"method":"subscribe","result":{"channel":"ticker","event_trigger":"trades","snapshot":true,"symbol":"BTC/USD"},"success":true,"time_in":"2026-10-03T11:59:57.000000Z","time_out":"2026-10-03T11:59:57.000100Z"}
+{"channel":"ticker","type":"snapshot","data":[{"symbol":"BTC/USD","bid":62800.00,"bid_qty":1.5,"ask":62800.02,"ask_qty":0.75,"last":62800.01,"volume":100.5,"vwap":62780.3,"low":62600.0,"high":62900.0,"change":49.51,"change_pct":0.08,"timestamp":"2026-10-03T11:59:58.123400Z"}]}
+{"channel":"trade","type":"update","data":[{"symbol":"BTC/USD","side":"sell","price":62799.5,"qty":0.25,"ord_type":"limit","trade_id":1002,"timestamp":"2026-10-03T11:59:59.500000Z"}]}
+{"channel":"heartbeat"}
