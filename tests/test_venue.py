@@ -101,9 +101,14 @@ def test_krakens_codes_map_to_currencies_and_tokens_never_by_guessing() -> None:
         "USD",
         "ZUSD",
     )
-    # Kraken states no network or contract for any token: no CAIP-19.
+    # Kraken states no network or contract for any token: each is Kraken's own
+    # instrument, by its code alone, with no CAIP-19 and no networks to keep.
     usdc = pairs.find("USDC/USD").base
     assert usdc.kind == "token" and usdc.identifier is None
+    assert usdc.venue_instrument and usdc.networks == ()
+    # A native coin is no venue's instrument: it keeps its SLIP-44 CAIP-19.
+    btc = pairs.find("XBT/USD").base
+    assert btc.identifier is not None and not btc.venue_instrument
     assert (usdc.resolve_by().scheme, usdc.resolve_by().source) == ("symbol", "kraken")
     # A pair that is not online is kept, with Kraken's word for its state.
     tkn = pairs.find("TKN/USD")

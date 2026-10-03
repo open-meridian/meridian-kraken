@@ -23,8 +23,10 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 #: The digest of rows.py, the seam, which is the same module in both plugins.
-ROWS_SHA256 = "623eb48ee58cabb3ec532e196d7d2166dcb91a214f3100c8dd1c3d8a34ab0104"
+ROWS_SHA256 = "fcd87f34d313c2b406069e7f41403d6ff319c94e658bc6bb5f7c904703cb9bd0"
 
 BITCOIN = ("caip19", "bip122:000000000019d6689c085ae165831e93/slip44:0", "")
 ETHER = ("caip19", "eip155:1/slip44:60", "")
@@ -127,11 +129,36 @@ def test_ether_is_its_native_coin_by_slip44(conformance: Any) -> None:
     assert ident(conformance.product("ETH/USD").base.identifier) == ETHER
 
 
-def test_a_stablecoin_quote_is_the_token_never_the_dollar(conformance: Any) -> None:
+def test_a_stablecoin_quote_is_the_venues_own_instrument(conformance: Any) -> None:
+    # The ruling (plans/the-lake-prices-the-book, "a venue's balance in a
+    # multi-network token is the venue's own instrument"): the venue names no
+    # one network for its USDC, so its USDC is its own instrument, by the
+    # venue's code: never the dollar, never one chain's USDC contract.
     product = conformance.product("BTC/USDC")
-    assert product.quote.kind == "token"
-    assert product.quote.resolve_by().scheme != "iso4217"
-    assert ident(product.money(Decimal("1")).currency) != USD
+    usdc = product.quote
+    assert usdc.kind == "token" and usdc.venue_instrument and usdc.identifier is None
+    venue_usdc = ("symbol", "USDC", conformance.plugin)
+    assert ident(usdc.resolve_by()) == venue_usdc
+    assert ident(product.money(Decimal("1")).currency) == venue_usdc
+
+
+def test_a_multi_network_token_has_no_caip19_and_a_single_network_one_does(
+    conformance: Any,
+) -> None:
+    rows = conformance.rows
+    contract = rows.caip19("eip155:1/erc20:0x00000000000000000000000000000000000000c0")
+    code = rows.symbol("USDC", conformance.plugin)
+    # On one network, its contract stated: that contract, by its CAIP-19.
+    single = rows.Asset(code, "token", contract)
+    assert ident(single.resolve_by()) == ("caip19", contract.value, "")
+    # On several: the venue's own instrument, its networks kept as plain data,
+    # and no contract's CAIP-19 ever.
+    multi = rows.Asset(code, "token", venue_instrument=True, networks=("ethereum", "solana"))
+    assert ident(multi.resolve_by()) == ("symbol", "USDC", conformance.plugin)
+    with pytest.raises(ValueError):
+        rows.Asset(code, "token", contract, venue_instrument=True, networks=("ethereum", "solana"))
+    with pytest.raises(ValueError):
+        rows.Asset(code, "token", contract, networks=("ethereum", "solana"))
 
 
 # --- the daily close, on the declared day ------------------------------------------

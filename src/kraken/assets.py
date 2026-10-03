@@ -18,12 +18,20 @@ global identifier, derived from Kraken's own codes and nothing else:
   until a person adds it.
 - **A native coin** carries its CAIP-19 by SLIP-44 coin type (`XXBT`,
   `XETH`).
-- **A token** carries no CAIP-19: Kraken's public API states no network and
-  no contract address for any asset, so none is guessed, and the token
-  resolves by its venue code, which W3.2 reports as missing for a person to
-  map.
+- **A token** follows the product owner's ruling (the plan's "a venue's
+  balance in a multi-network token is the venue's own instrument"): each
+  issuer contract on each chain is its own instrument, and a venue's balance
+  in a token is one of them only when the venue states the one network and
+  its contract. Kraken's public API states no network and no contract
+  address for any asset, so every token but a native coin is Kraken's own
+  instrument, its promise that it converts into one of the issuer's
+  contracts: known by `symbol@kraken` alone, never by a contract's CAIP-19,
+  with no networks to keep (`Asset.networks` stays empty). W3.2 reports it
+  as missing for a person to map. Never guessed from a ticker. The same
+  holds, until a person adds them to FIAT, for the fiat codes above that
+  Kraken does not flag.
 - **A stablecoin is a token,** never its fiat currency (decisions/030): a
-  pair quoted in `USDC` is quoted in the USDC token, and Kraken's own
+  pair quoted in `USDC` is quoted in Kraken's USDC instrument, and Kraken's own
   `USDCUSD` pair is the dataset's price for valuing it (the plan's Q25).
 
 Kraken's codes stay source-scoped `symbol`s (source `kraken`); the pair's key
@@ -66,7 +74,9 @@ def asset(code: str, details: dict[str, Any] | None) -> Asset:
     name = str((details or {}).get("altname") or "")
     if code in FIAT:
         return Asset(venue_code, "currency", currency(FIAT[code]), name)
-    return Asset(venue_code, "token", NATIVE.get(code), name)
+    if code in NATIVE:
+        return Asset(venue_code, "token", NATIVE[code], name)
+    return Asset(venue_code, "token", None, name, venue_instrument=True)
 
 
 def v2_symbol(wsname: str) -> str:

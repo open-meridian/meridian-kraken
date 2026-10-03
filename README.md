@@ -19,9 +19,10 @@ because there is nothing to record into yet. The plan is meridian-design's
 - `src/kraken/assets.py`: pairs to assets, found by any of Kraken's names
   (`XXBTZUSD`, `XBTUSD`, `XBT/USD`, `BTC/USD`). A pair is a market, not an
   asset: the base token is a row's subject (CAIP-19 for native coins by
-  SLIP-44; Kraken states no token's network or contract, so no other token
-  has one), priced in the quote asset (a currency's ISO 4217 cash instrument,
-  by Kraken's fiat codes, or a stablecoin's own token, never the dollar).
+  SLIP-44; Kraken states no token's network or contract, so every other
+  token is Kraken's own instrument, known by its code alone), priced in the
+  quote asset (a currency's ISO 4217 cash instrument, by Kraken's fiat
+  codes, or the venue's stablecoin instrument, never the dollar).
 - `src/kraken/convert.py`: Kraken's values to rows, exact decimals only (its
   trade times and WebSocket v2's prices are JSON numbers, read as Decimals
   from their text), the daily close on the declared UTC day with the forming

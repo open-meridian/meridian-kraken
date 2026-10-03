@@ -30,7 +30,9 @@ Where this departs from the spec, each departure is a question for v14:
   `entity_id` needs an entity store this spike does not have.
 - `Money.currency` is an `Identifier`, not v11's `Money.currency_code`: ISO
   4217 alone cannot name a stablecoin, and a price quoted in USDC is quoted
-  in the USDC token, never in dollars (decisions/030; the plan's Q25).
+  in the venue's USDC instrument, by its venue code: never in dollars
+  (decisions/030; the plan's Q25), and never in one chain's USDC contract
+  (the ruling under `Asset`).
 - A required value that fails conversion is None, with its `AsReported` in
   `meta.unconverted`; the spec's dictionary says `Price.price` is never empty,
   which the lake would refuse. And an `AsReported` in `meta.unconverted` does
@@ -144,12 +146,30 @@ class Asset:
     """One side of a venue's market: a currency's cash instrument or a token.
     `identifier` is the global one W3.1 resolves by (`iso4217` for a
     currency, `caip19` for a token), None where the plugin does not know it:
-    never guessed from a ticker."""
+    never guessed from a ticker.
+
+    The product owner's ruling (plans/the-lake-prices-the-book, "a venue's
+    balance in a multi-network token is the venue's own instrument"): each
+    issuer contract on each chain is its own instrument, with its CAIP-19; a
+    token whose network the venue does not specify -- Coinbase's `USDC`,
+    listed on many networks -- is the venue's promise that it converts into
+    one of those contracts, a separate instrument with the venue's code alone
+    and never a contract's CAIP-19. A token on the one network the venue
+    states, with its contract, carries that contract's CAIP-19; a native coin
+    its SLIP-44 one.
+
+    `venue_instrument` and `networks` are this spike's own placeholders, not
+    contract vocabulary: `venue_instrument` marks a token as the venue's own
+    instrument, and `networks` keeps, as plain data, the networks the venue
+    lists it on (empty where it states none), for the "convertible into"
+    relationship whose shape and name are the entity store's spec's."""
 
     venue_code: Identifier
     kind: AssetKind
     identifier: Identifier | None = None
     name: str = ""
+    venue_instrument: bool = False
+    networks: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.venue_code.scheme != SYMBOL:
@@ -158,6 +178,10 @@ class Asset:
             wanted = ISO4217 if self.kind == "currency" else CAIP19
             if self.identifier.scheme != wanted:
                 raise ValueError(f"a {self.kind} is identified by {wanted}, never otherwise")
+        if self.venue_instrument and (self.kind != "token" or self.identifier is not None):
+            raise ValueError("the venue's own instrument is a token known by its venue code alone")
+        if self.networks and not self.venue_instrument:
+            raise ValueError("networks are kept only for the venue's own instrument")
 
     def resolve_by(self) -> Identifier:
         """What W3.1 is asked for: the global identifier, else the venue's code
