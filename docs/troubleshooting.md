@@ -15,13 +15,18 @@ as reported, and the plugin asks again at its next mapping, once a day.
 ## An asset not resolved
 
 The Datasets page lists assets whose identifiers matched two of your
-deployment's instruments. Their pairs are left out until a person resolves
-the conflict on the Instruments page.
+deployment's instruments. A pair quoted in one is left out until a person
+resolves the conflict on the Instruments page; an instrument asked about
+whose record met another is still priced.
 
 ## A subject declined
 
-A reader asked for an instrument the plugin cannot price: no Kraken pair has
-it as its base (`not covered`), the day is older than the 720 days Kraken
+A reader asked for an instrument the plugin cannot price: its record names
+none of Kraken's assets -- no Kraken code, no ISO 4217 code or CAIP-19 a
+Kraken asset carries, no other source's symbol that is Kraken's code (a
+custodian's `BTC` is not Kraken's `XXBT`: add bitcoin's CAIP-19 to the
+record on the Instruments page, and the plugin reads it again within a day)
+-- or no Kraken pair has it as its base (`not covered`), the day is older than the 720 days Kraken
 gives (`beyond history`), or Kraken has nothing for that day (`source
 silent`).
 

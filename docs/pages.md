@@ -14,11 +14,13 @@ ID in the platform's venue master, or that your deployment does not hold it.
 ## Datasets
 
 What the plugin serves: its two datasets, with their data, modes, day and
-standard terms; how many of Kraken's pairs are mapped to your
-deployment's instruments, and which assets did not resolve; what Kraken
-entitles it to (public data, no key: every pair it lists); and the wants
-the lake sent it, those it keeps current first, each with how many rows it
-recorded and subjects it declined.
+standard terms; how many of Kraken's pairs are mapped for the instruments
+the lake asked about, how many of your deployment's instruments it named as
+Kraken's assets, and which assets did not resolve; what Kraken entitles it
+to (public data, no key: every pair it lists); and the wants the lake sent
+it, those it keeps current first, each with how many rows it recorded and
+subjects it declined. Search above the wants narrows them by ID, dataset,
+what was asked or state.
 
 ## Tools for agents
 

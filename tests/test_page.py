@@ -26,8 +26,7 @@ TOOLS = {"read_connection": "/", "read_datasets": "/datasets"}
 async def worked() -> tuple[Any, Lake]:
     lake = Lake()
     dgm = dgm_on(lake)
-    await dgm.ensure_mapped()
-    btc = dgm.products.ids[venue.BASE]
+    btc = await lake.held(dgm, venue.BASE)
     for want_id, dataset, standing in (("WNT-1", "daily", False), ("WNT-2", "live", True)):
         day = None if standing else venue.CLOSED
         await hear(lake, dgm, wanted(dgm, want_id, dataset, [btc], day=day, standing=standing))
@@ -95,7 +94,20 @@ def test_the_tools_answer_what_the_pages_show(worked: tuple[Any, Lake]) -> None:
     assert (
         f"{datasets['products_mapped']} of {datasets['products_listed']} products mapped" in shown
     )
+    assert datasets["subjects_named"] == 1 and datasets["reads_instruments"] is True
+    assert "for 1 subject the lake asked for" in shown
     assert "Kept current" in shown
+
+
+def test_the_wants_are_searched(worked: tuple[Any, Lake]) -> None:
+    client = PageClient(venue.page.pages)
+    text = client.get("/datasets", "admin", q="kept current").text
+    assert 'type="search"' in text and "WNT-2" in text and "WNT-1" not in text
+    assert "1 of 2" in text
+    both = client.get("/datasets", "admin", q=f"{venue.VENUE}:").text
+    assert "WNT-1" in both and "WNT-2" in both and "2 of 2" in both
+    assert "No want matches" in client.get("/datasets", "admin", q="nothing-like-it").text
+    assert len(client.call_tool("read_datasets", level="admin").data["wants"]) == 2
 
 
 def test_a_tool_is_refused_below_manage(worked: tuple[Any, Lake]) -> None:

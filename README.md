@@ -44,12 +44,29 @@ Two datasets, declared from code in its catalogue (`declaration.py`):
   end. Bars carry Kraken's volume-weighted price and trade count, and a day
   that traded nothing (count 0) carries no volume-weighted price, whatever
   Kraken writes in its place.
+- **Every subject is the deployment's own record.** The lake asks for
+  instruments by the deployment's ID, most of them a custodian's records
+  that Kraken never resolved. The plugin reads each record (W3.6, a `dgm`'s
+  read from contract v18 as ruled 2026-10-10) and names Kraken's asset it is
+  by its identifiers: Kraken's code (`symbol` at `kraken`), else the global
+  identifier Kraken's asset carries (a fiat code's ISO 4217, a native coin's
+  CAIP-19), else another source's symbol that is Kraken's code (never for
+  a record that is a security, by its class or a CUSIP or ISIN). Where the
+  record lacks Kraken's identifiers they are reported beside the one it
+  matched, so the record carries them; where that meets another record it is
+  reported, and the subject is served all the same. A record naming none of
+  Kraken's assets is declined, not covered: a custodian's `BTC` alone is not
+  Kraken's `XXBT`, so bitcoin is named by its CAIP-19. Nothing is resolved
+  for an asset no subject is: no record is minted for each asset Kraken
+  lists.
 - **The pair map**, kept in the plugin's storage (`products.py`): a pair
   names a market, not an asset, so its base asset is a row's subject and its
   quote asset what the price is in. Kraken names assets by its own legacy
-  codes (`XXBT` for bitcoin, `ZUSD` for the dollar). Each asset is resolved
-  through the deployment's instrument store, with its code as a `symbol`
-  whose source is `kraken`:
+  codes (`XXBT` for bitcoin, `ZUSD` for the dollar). Which asset each
+  subject is is kept there, and each quote asset of a subject's pairs is
+  resolved through the deployment's instrument store, with its code as a
+  `symbol` whose source is `kraken`, a record minted only where none
+  resolves:
   - a fiat code Kraken documents (`ZUSD`, `ZEUR`, `ZGBP`, `ZCAD`, `ZJPY`,
     `ZAUD`, `CHF`) by its ISO 4217 code -- a `Z` is no sign of a currency;
   - a native coin (`XXBT`, `XETH`) by its SLIP-44 CAIP-19;
@@ -57,8 +74,8 @@ Two datasets, declared from code in its catalogue (`declaration.py`):
     contract for any asset, so each is Kraken's own instrument, its promise
     that it converts into one of the issuer's contracts (the product owner's
     ruling of 2026-10-03), never a contract's CAIP-19.
-  An asset that does not resolve (its identifiers meet two records) is
-  reported, once, and every pair on it left out.
+  A quote asset that does not resolve (its identifiers meet two records) is
+  reported, once, and every pair quoted in it left out.
 - **Money names an instrument.** A price in a currency names it by its ISO
   4217 code, which core resolves to the currency's cash instrument. A price
   in a token -- an XBT/USDT or XBT/USDC price -- names the token's own
@@ -126,10 +143,11 @@ A `dgm` shows no market data: viewing prices is for the reading roles.
   second) and what the plugin spends of it (at most one a second, a rate
   limit waited out), its calls, rate limits met and failures, the last error, and
   the venue master's ID it resolved.
-- **Datasets**: each dataset of its catalogue, the pair map (pairs
-  listed and mapped, assets not resolved), what Kraken entitles it to
-  (public data, no key: every pair it lists), and the wants it heard,
-  standing ones first, each with what it recorded and declined.
+- **Datasets**: each dataset of its catalogue, the pair map (pairs listed,
+  and mapped for the subjects the lake asked for; assets not resolved), what
+  Kraken entitles it to (public data, no key: every pair it lists), and the
+  wants it heard, standing ones first, each with what it recorded and
+  declined, under a search that narrows them.
 
 Both fit one screen at 1440x900 and 390x844, rows one line each, the wants
 paged by the kit's `om-pager`.
@@ -155,10 +173,12 @@ where in it the row came from. Kept in units of a UTC day under
     make e2e
 
 runs the plugin in synthetic mode on core's plugin harness, the runtime and
-harness of core b1b8420 pinned by digest, beside the e2e's reader
-(`e2e/reader.py`, a `reporting` plugin run from the plugin's image): the
-catalogue listed, the pairs mapped, both datasets licensed and the reader
-entitled, a day's closes wanted and recorded against the want (XXBTZUSD's in
+harness of core e4a14fc pinned by digest, beside the e2e's reader
+(`e2e/reader.py`, a `reporting` plugin run from the plugin's image, holding
+`custody` to resolve a custodian's records): the catalogue listed, the
+listing read with no record minted for any asset, both datasets licensed and
+the reader entitled, a custodian's bitcoin (by its CAIP-19 and symbol) read
+and named, and a day's closes wanted and recorded against the want (XXBTZUSD's in
 dollars, XBTUSDC's on USDC's own instrument, exactly), the dollar declined
 and the euro's rate in dollars recorded, bitcoin's live prices kept current until withdrawn, both read tools answering
 what the pages show, and `store lake` numbering each row with no holes

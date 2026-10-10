@@ -10,10 +10,13 @@ bar or candle is on either page; viewing prices is for the reading roles.
   what the plugin spends of it, and the venue master's ID it resolved.
 - **Datasets** (`/datasets`, `read_datasets`): what it serves -- each
   dataset of its catalogue, its data types, modes, cadence, declared day and
-  standard terms -- the product map (products listed, mapped, assets not
-  resolved), what Kraken entitles it to (public market data, no key: every
-  product it lists), the standing wants it keeps current, and the wants it
-  heard, each with what it recorded and declined.
+  standard terms -- the product map (products listed, those serving the
+  subjects the lake asked for, how many subjects its records named, assets
+  not resolved), what Kraken entitles it to (public market data, no key:
+  every product it lists), the standing wants it keeps current, and the
+  wants it heard, each with what it recorded and declined. The wants grow,
+  so a search above them narrows the rows drawn (matching every word); the
+  tool answers them all.
 
 Each page declares the typed record it renders (`answers=`), so each is also
 a read tool on the deployment's MCP surface answering the same record
@@ -39,6 +42,8 @@ TITLE = "Kraken"
 ENTITLEMENT = "Public market data: no key, so nothing to resolve at Kraken; every pair it lists"
 
 pages = meridian.Pages(TITLE, templates=Path(__file__).parent / "templates")
+#: The longest search the Datasets page reads.
+MOST_QUERY = 100
 
 
 class _Held:
@@ -144,6 +149,7 @@ class WantRow:
     standing: bool
     kept_current: bool
     heard_at: datetime | None = None
+    state: str = ""
 
 
 @dataclass(frozen=True)
@@ -154,6 +160,8 @@ class Datasets:
     entitled_at_vendor: str = ENTITLEMENT
     products_listed: int = 0
     products_mapped: int = 0
+    subjects_named: int = 0
+    reads_instruments: bool = True
     assets_not_resolved: list[str] = field(default_factory=list)
     map_read_at: datetime | None = None
     standing_wants: int = 0
@@ -196,7 +204,7 @@ def datasets_now() -> Datasets:
     standing = set(dgm.standing)
     wants = [
         WantRow(w.want_id, w.dataset, w.asked, w.subjects, w.recorded, w.declined, w.standing,
-                w.want_id in standing, _when(w.at_ns))
+                w.want_id in standing, _when(w.at_ns), _state(w.want_id in standing, w.standing))
         for w in dgm.heard
     ]  # fmt: skip
     wants.sort(key=lambda w: (not w.kept_current,))
@@ -204,6 +212,8 @@ def datasets_now() -> Datasets:
         datasets=rows,
         products_listed=len(dgm.products.listed),
         products_mapped=len(dgm.products.mapped()),
+        subjects_named=len(dgm.products.subjects),
+        reads_instruments=dgm.reads_instruments,
         assets_not_resolved=sorted(dgm.products.missing),
         map_read_at=_when(dgm.products.read_at_ns),
         standing_wants=len(standing),
@@ -214,6 +224,16 @@ def datasets_now() -> Datasets:
         not_read=dgm.counts.unread,
         wants=wants,
     )
+
+
+def _state(kept_current: bool, standing: bool) -> str:
+    return "Kept current" if kept_current else "Withdrawn" if standing else "Answered"
+
+
+def matching(query: str, *texts: str) -> bool:
+    """Whether every word of a search is in one of `texts`, case aside."""
+    held = " ".join(texts).lower()
+    return all(word in held for word in query.lower().split())
 
 
 def _mode(mode: object) -> str:
@@ -228,4 +248,8 @@ def datasets(request: meridian.Request) -> meridian.Response:
     """What the plugin serves the lake: each dataset of its catalogue, the
     product map, what Kraken entitles it to, the standing wants it keeps
     current, and the wants it heard with what each recorded and declined."""
-    return pages.answer("datasets.html", datasets_now(), now=time.time())
+    data = datasets_now()
+    # A browser's search narrows the wants drawn; the tool answers them all.
+    query = request.query.get("q", "").strip()[:MOST_QUERY]
+    shown = [w for w in data.wants if matching(query, w.want_id, w.dataset, w.asked, w.state)]
+    return pages.answer("datasets.html", data, now=time.time(), query=query, shown=shown)

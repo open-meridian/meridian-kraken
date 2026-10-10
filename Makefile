@@ -30,18 +30,20 @@ MERIDIAN_VERSION := $(shell sed -n 's/^ *MERIDIAN_VERSION: *\([0-9][0-9.]*\).*/\
 
 # The released runtime `make e2e` proves the plugin against, by tag and digest,
 # and core's plugin harness published with it, by the same commit's tag and
-# its digest: core main b1b8420, the lake built (contract v18). Moved together
-# by a deliberate commit, and with the SDK when a contract version changes.
+# its digest: core main e4a14fc, a dgm reading an instrument's record (contract
+# v18, ruled 2026-10-10). Moved together by a deliberate commit, and with the
+# SDK when a contract version changes.
 # `make e2e RUNTIME_IMAGE=...:latest HARNESS_IMAGE=...:latest` tries a newer
 # core; e2e-latest.yaml does that weekly.
-RUNTIME_IMAGE ?= ghcr.io/open-meridian/meridian-runtime:b1b8420@sha256:422a28cec7ba6b3856ac43b9871cea9fbc74f69ea86ce5737ee49f4c29dcc77a
-HARNESS_IMAGE ?= ghcr.io/open-meridian/meridian-harness:b1b8420@sha256:e03b0f06c273504ca8c2e893c8279b6ac3d91ee9b67ead9de28b35c760e731c3
+RUNTIME_IMAGE ?= ghcr.io/open-meridian/meridian-runtime:e4a14fc@sha256:44c919b2d0d67fd873ea4829643f029bacca691ae0c2e85246bfc920a27850b3
+HARNESS_IMAGE ?= ghcr.io/open-meridian/meridian-harness:e4a14fc@sha256:c1d816676ae2163cf03fa984f82105353f29921d2aca823e7eb7b5717e86b7ab
 # Its roles as pyproject.toml declares them (a JSON list's items), so the
 # harness launches it as `meridian plugin upload` would; and the e2e's reader
-# (e2e/reader.py) beside it, holding `reporting`, run from the same image.
+# (e2e/reader.py) beside it, holding `custody` beside `reporting` to resolve
+# a custodian's records, run from the same image.
 ROLES := $(shell sed -n 's/^roles *= *\[\(.*\)\]/\1/p' pyproject.toml | tr -d ' ')
 PLUGINS := [{"instance": "$(PLUGIN)", "image": "$(IMAGE)", "roles": [$(ROLES)]}, \
-            {"instance": "reader", "image": "$(IMAGE)", "roles": ["reporting"]}]
+            {"instance": "reader", "image": "$(IMAGE)", "roles": ["custody", "reporting"]}]
 # What the compose files read: the runtime, and this repository's e2e/.
 export MERIDIAN_RUNTIME_IMAGE := $(RUNTIME_IMAGE)
 export E2E_DIR := $(CURDIR)/e2e
@@ -172,10 +174,10 @@ e2e-run:
 preview:
 	@$(DOCKER) build $(SDK_CONTEXT) -f Dockerfile.check --target test -t $(CHECK) . >/dev/null 2>&1
 	@mkdir -p preview
-	@for page in connection datasets; do \
+	@for page in connection datasets datasets-search; do \
 		docker run --rm $(CHECK) python -m $(PLUGIN).preview $$page >preview/$$page.html || exit 1; \
 	done
-	@echo "preview: preview/connection.html, preview/datasets.html"
+	@echo "preview: preview/connection.html, preview/datasets.html, preview/datasets-search.html"
 
 # The pair passes one suite unchanged (plans/the-lake-prices-the-book, row 6):
 # the files it shares are held byte for byte to the sibling's, the package's

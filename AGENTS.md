@@ -31,12 +31,18 @@ a deployment admin approves it.
   names, and `tests/venue_cases.py`, the one test module that knows which
   venue this is.
 - **The lake's rules, which the SDK's `dgm` suite holds** (`tests/test_suite.py`
-  runs it, unchanged from meridian-coinbase's): resolve every subject before
-  recording (`products.py`: a documented fiat code by `iso4217`, a native
-  coin by its SLIP-44 `caip19`, with its code as a `symbol` whose source is
-  `kraken`; every other token is Kraken's own instrument, by its code alone,
-  since Kraken states no network or contract for any), and report what does
-  not resolve (`report_missing_instrument`), once; resolve the venue by its
+  runs it, unchanged from meridian-coinbase's): name every subject before
+  recording -- read its record (`resolve_instrument`, W3.6) and name
+  Kraken's asset by its identifiers (Kraken's code, the global identifier
+  Kraken's asset carries, another source's symbol that is Kraken's code),
+  joining Kraken's identifiers to the record where it lacks them; never
+  resolve an asset no subject is, so no record is minted per listed asset --
+  and resolve each quote asset of a subject's pairs (`products.py`: a
+  documented fiat code by `iso4217`, a native coin by its SLIP-44 `caip19`,
+  with its code as a `symbol` whose source is `kraken`; every other token is
+  Kraken's own instrument, by its code alone, since Kraken states no network
+  or contract for any), reporting what does not resolve
+  (`report_missing_instrument`), once; resolve the venue by its
   code (`resolve_venue`, `symbol` `kraken` at `kraken`: Kraken has no MIC), and where the deployment does not hold it leave each row's
   `venue_id` empty with the code beside it as reported. A price in a
   currency names it by its ISO 4217 code; a price in any token -- USDT,
@@ -55,7 +61,8 @@ a deployment admin approves it.
   the record it renders (`answers=`), so each is a read tool on the
   deployment's MCP surface, `read_connection` and `read_datasets`, answering
   what the page shows; keep the two in step. Both fit one screen at
-  1440x900 and 390x844 (one-line rows, `om-pager` for the wants).
+  1440x900 and 390x844 (one-line rows, `om-pager` for the wants, a search
+  above them: a list whose rows grow gets one).
 - **No real response is committed.** Kraken asks its prior permission for any
   non-personal commercial use of its public data, so `tests/` and
   `src/kraken/synthetic/` hold synthetic exchanges, shaped exactly as Kraken

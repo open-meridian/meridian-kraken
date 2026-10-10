@@ -4,18 +4,23 @@ harness (contract v18), in synthetic mode, beside a reader (e2e/reader.py).
 1. Launched: the plugin registers its catalogue; the deployment admin's tool
    lists its two datasets, `daily` and `live`, each on the UTC day ending at
    00:00, with their modes.
-2. Synthetic mode on: the plugin maps its pairs, each asset resolved to a
-   record the deployment minted -- bitcoin by its CAIP-19, USDC by its code
-   at the venue, the dollar and the euro by ISO 4217 -- listed on the Instruments page; the
-   venue, which the harness's deployment does not hold (it has no
-   platform), reported missing.
+2. Synthetic mode on: the plugin reads its listing and mints no record for
+   any asset (the first build minted one per asset); the venue, which the
+   harness's deployment does not hold (it has no platform), reported
+   missing. The reader then names bitcoin as a custodian's book holds it,
+   by its CAIP-19 and the custodian's symbol, and the dollar and the euro by
+   ISO 4217.
 3. Licensed and entitled: the admin licenses both datasets and entitles the
    reader to them, the broker reloaded with each.
-4. A close wanted: the reader reads BTC's closes for a day nothing has
-   recorded; the lake asks the plugin, which records XXBTZUSD's close in
-   dollars and XBTUSDC's on USDC's own instrument, exactly as the venue
-   stated them, on that business date, each naming its raw record and the
-   venue as reported; the reader reads both, and hears them.
+4. A close wanted: the reader reads the custodian's bitcoin's closes for a
+   day nothing has recorded; the lake asks the plugin, which reads the
+   record (W3.6, a dgm's from contract v18 as ruled 2026-10-10), names it
+   Kraken's XXBT by its CAIP-19, joins its own code to it, and records
+   XXBTZUSD's close in dollars and XBTUSDC's on USDC's own instrument --
+   resolved then, the one record it mints -- exactly as the venue stated
+   them, on that business date, each naming its raw record and the venue as
+   reported; the reader reads both, and hears them. No record was minted
+   for an asset no subject is.
 5. Declined, and a rate: a read of the dollar's closes, which no pair's base
    is, is declined as not covered; the euro's, recorded from EUR/USD in
    dollars: an FX rate on a currency's cash instrument.
@@ -60,6 +65,8 @@ CLOSES = {"XXBTZUSD": "62001.40000", "XBTUSDC": "62006.75"}
 LAST = {"XXBTZUSD": "61988.90000", "XBTUSDC": "62006.75"}
 #: The euro's close in dollars that day (ZEURZUSD): an FX rate.
 EUR_CLOSE = "1.0925"
+#: The assets no subject is, for which the first build minted a record each.
+UNASKED = r"(?<![A-Z])(X?ETH|TKN|QDT|PLY)(?![A-Z])"
 
 
 class Failed(Exception):
@@ -140,7 +147,7 @@ def run():
     compose("up", "-d")
     for instance in (VENUE, "reader"):
         runner("ready", "--instance", instance)
-    runner("grant", "--instance", "reader", "--level", "read")
+    runner("grant", "--instance", "reader", "--level", "read", "--role", "reporting")
     runner("grant", "--instance", VENUE, "--level", "admin")
     runner("mcp", "connect", "--covers", "deployment_admin", "--covers", f"{VENUE}:admin")
     tools = runner("mcp", "list").split()
@@ -159,15 +166,17 @@ def run():
         must(entry["modes"] == modes and entry["day_time_zone"] == "Etc/UTC"
              and entry.get("day_end_minute", 0) == 0, f"step 1, {key}'s entry: {entry}")
 
-    # 2. Synthetic mode: the products mapped, each asset resolved.
+    # 2. Synthetic mode: the listing read, no record minted for any asset;
+    # then the reader's records, as a custodian's book holds them.
     runner("settings", "--instance", VENUE, "synthetic=true")
-    listed = until(90, lambda: (lambda o: o if "slip44:0" in o and "USDC" in o else None)(
-        runner("instruments")), "step 2, the product map's records were not listed")
-    log("instruments:\n" + listed)
-    btc = instrument(listed, r"bip122:000000000019d6689c085ae165831e93/slip44:0")
-    usdc = instrument(listed, r"(?<![A-Z])USDC(?![A-Z])")
-    usd = instrument(listed, r"iso4217\W+USD(?![A-Z])|(?<![A-Z])USD(?![A-Z]).*iso4217")
-    eur = instrument(listed, r"iso4217\W+EUR(?![A-Z])|(?<![A-Z])EUR(?![A-Z]).*iso4217")
+    until(90, lambda: call(named["read_datasets"], {}, "read", "unchanged")["data"]
+          ["products_listed"] >= 5, "step 2, the listing was not read")
+    listed = runner("instruments")
+    log("instruments, the listing read:\n" + listed)
+    must(not re.search(UNASKED, listed) and "USDC" not in listed and "slip44" not in listed,
+         f"step 2, no record minted for an asset no subject is: {listed}")
+    ids = read("/resolve")
+    btc, usd, eur = ids["btc"], ids["usd"], ids["eur"]
 
     # 3. Licensed and entitled.
     runner("licence", f"{VENUE}:daily", "kept=true", "retention_days=0", "derived_use=true",
@@ -199,6 +208,11 @@ def run():
              f"step 4, the venue not held, named as reported: {row}")
         must(row["raw"].startswith("responses/"), f"step 4, its raw record: {row}")
     dollars = by_product.get(FIAT_PRODUCT) or next(iter(by_product.values()))
+    listed = runner("instruments")
+    log("instruments, after the want:\n" + listed)
+    usdc = instrument(listed, r"(?<![A-Z])USDC(?![A-Z])")
+    must(not re.search(UNASKED, listed),
+         f"step 4, no record minted for an asset no subject is: {listed}")
     must(dollars["instrument_id"] not in ("", usdc, btc),
          f"step 4, a dollar price names the dollar's cash instrument: {dollars}")
     stable = by_product.get(STABLE_PRODUCT, {"instrument_id": usdc, "currency_code": ""})
@@ -247,7 +261,8 @@ def run():
          "step 7, the Connection page shows the same")
     served = call(named["read_datasets"], {}, "read", "unchanged")["data"]
     must([d["dataset"] for d in served["datasets"]] == [f"{VENUE}:daily", f"{VENUE}:live"]
-         and served["products_mapped"] >= 5 and served["recorded"] >= 2,
+         and served["products_mapped"] >= 3 and served["subjects_named"] == 3
+         and served["reads_instruments"] is True and served["recorded"] >= 2,
          f"step 7, read_datasets: {served}")
     shown = page(VENUE, "admin", "/datasets")
     must(f"{served['products_mapped']} of {served['products_listed']} products mapped" in shown,
@@ -289,10 +304,12 @@ def run():
 
     print(f"e2e OK in {int(time.time() - started)}s: on core's plugin harness, the catalogue's "
           "daily and live datasets listed by the deployment admin's tool on the UTC day; the "
-          "pair map made in synthetic mode, bitcoin, USDC, the dollar and the euro resolved and the venue "
-          "reported missing; both datasets licensed and the reader entitled; a day's closes "
-          "wanted and recorded against the want, XXBTZUSD's in dollars and XBTUSDC's on USDC's "
-          "own instrument, exactly, read and heard; the dollar declined as not covered and the "
+          "listing read in synthetic mode with no record minted for any asset, and the venue "
+          "reported missing; both datasets licensed and the reader entitled; a custodian's "
+          "bitcoin, by its CAIP-19 and the custodian's symbol, read and named, and a day's "
+          "closes wanted and recorded against the want, XXBTZUSD's in dollars and XBTUSDC's on "
+          "USDC's own instrument, exactly, read and heard, no record minted for an asset no "
+          "subject is; the dollar declined as not covered and the "
           "euro's rate in dollars recorded; bitcoin's "
           "live prices kept current until withdrawn; read_connection and read_datasets "
           "answering what the pages show; raw responses in storage; and `store lake` "

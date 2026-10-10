@@ -1,5 +1,5 @@
 """The dgm's behaviour past the suite's cases: restatement, wants, the live
-dataset, the venue and the product map.
+dataset, the venue, the product map, and each subject named from its record.
 
 The same file in meridian-coinbase and meridian-kraken (`make suite-same`),
 run against each plugin's synthetic exchange (tests/venue_cases.py) and a
@@ -12,22 +12,18 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
+import meridian
 import pytest
 from meridian.operations import as_decimal, as_money
 from meridian.plugin.v1 import operations_pb2 as ops
 
 import venue_cases as venue
-from conftest import Lake, dgm_on, hear, wanted
-
-
-async def _subject(dgm: object, code: str) -> str:
-    await dgm.ensure_mapped()  # type: ignore[attr-defined]
-    return str(dgm.products.ids[code])  # type: ignore[attr-defined]
+from conftest import BITCOIN, OTHER, Lake, dgm_on, hear, wanted
 
 
 async def test_the_forming_day_read_again_is_restated_and_a_repeat_unchanged(lake: Lake) -> None:
     first = dgm_on(lake, forming=0)
-    btc = await _subject(first, venue.BASE)
+    btc = await lake.held(first, venue.BASE)
     await first.record_days([btc], venue.TODAY, venue.TODAY, "meridian.v1.Price")
     again = dgm_on(lake, forming=1)
     await again.record_days([btc], venue.TODAY, venue.TODAY, "meridian.v1.Price")
@@ -45,7 +41,7 @@ async def test_the_forming_day_read_again_is_restated_and_a_repeat_unchanged(lak
 
 async def test_a_completed_day_is_a_plain_date_with_its_published_time(lake: Lake) -> None:
     dgm = dgm_on(lake)
-    btc = await _subject(dgm, venue.BASE)
+    btc = await lake.held(dgm, venue.BASE)
     await dgm.record_days([btc], venue.CLOSED, venue.CLOSED, "meridian.v1.Price")
     product, text = venue.CLOSED_CLOSE
     [row] = [r for r in lake.rows() if r.meta.row_key.startswith(f"{product}:1d:")]
@@ -58,7 +54,7 @@ async def test_a_completed_day_is_a_plain_date_with_its_published_time(lake: Lak
 
 async def test_a_price_past_a_float_is_recorded_exactly(lake: Lake) -> None:
     dgm = dgm_on(lake)
-    subject = await _subject(dgm, venue.EXACT_BASE)
+    subject = await lake.held(dgm, venue.EXACT_BASE)
     await dgm.record_days([subject], venue.CLOSED, venue.CLOSED, "meridian.v1.Price")
     amounts = {str(as_decimal(r.price.amount)) for r in lake.rows()}
     assert venue.EXACT_CLOSE in amounts
@@ -66,7 +62,7 @@ async def test_a_price_past_a_float_is_recorded_exactly(lake: Lake) -> None:
 
 async def test_a_stablecoin_quote_names_the_tokens_instrument_never_a_currency(lake: Lake) -> None:
     dgm = dgm_on(lake)
-    btc = await _subject(dgm, venue.STABLE_BASE)
+    btc = await lake.held(dgm, venue.STABLE_BASE)
     await dgm.record_days([btc], venue.CLOSED, venue.CLOSED, "meridian.v1.Price")
     stable = dgm.products.ids[venue.STABLE]
     [row] = [r for r in lake.rows() if r.meta.row_key.startswith(f"{venue.STABLE_PRODUCT}:")]
@@ -78,7 +74,7 @@ async def test_a_stablecoin_quote_names_the_tokens_instrument_never_a_currency(l
 
 async def test_wants_are_recorded_against_or_declined_with_why(lake: Lake) -> None:
     dgm = dgm_on(lake)
-    btc = await _subject(dgm, venue.BASE)
+    btc = await lake.held(dgm, venue.BASE)
     future = venue.TODAY + timedelta(days=3)
     for want_id, day, subjects in (
         ("WNT-1", venue.CLOSED, [btc, "LCL-NOT-COVERED"]),
@@ -99,7 +95,7 @@ async def test_wants_are_recorded_against_or_declined_with_why(lake: Lake) -> No
 
 async def test_the_daily_datasets_latest_is_the_past_weeks_days(lake: Lake) -> None:
     dgm = dgm_on(lake)
-    btc = await _subject(dgm, venue.BASE)
+    btc = await lake.held(dgm, venue.BASE)
     await hear(lake, dgm, wanted(dgm, "WNT-7", "daily", [btc]))
     days = {r.meta.business_date for r in lake.rows()}
     assert venue.CLOSED.isoformat() in days and not lake.on("DeclineWant"), days
@@ -110,7 +106,7 @@ async def test_the_daily_datasets_latest_is_the_past_weeks_days(lake: Lake) -> N
 @pytest.mark.skipif(not venue.market().session.limits.history_days, reason="no reach stated")
 async def test_a_day_before_the_venues_reach_is_declined_beyond_history(lake: Lake) -> None:
     dgm = dgm_on(lake)
-    btc = await _subject(dgm, venue.BASE)
+    btc = await lake.held(dgm, venue.BASE)
     reach = dgm.market.session.limits.history_days
     old = venue.TODAY - timedelta(days=reach + 5)
     declined = await dgm.record_days([btc], old, old)
@@ -119,7 +115,7 @@ async def test_a_day_before_the_venues_reach_is_declined_beyond_history(lake: La
 
 async def test_the_live_dataset_records_last_bid_and_ask_once_per_change(lake: Lake) -> None:
     dgm = dgm_on(lake)
-    btc = await _subject(dgm, venue.BASE)
+    btc = await lake.held(dgm, venue.BASE)
     await dgm.record_live([btc])
     await dgm.record_live([btc])
     rows = lake.rows()
@@ -138,7 +134,7 @@ async def test_the_live_dataset_records_last_bid_and_ask_once_per_change(lake: L
 
 async def test_a_standing_live_want_is_kept_current_until_withdrawn(lake: Lake) -> None:
     dgm = dgm_on(lake)
-    btc = await _subject(dgm, venue.BASE)
+    btc = await lake.held(dgm, venue.BASE)
     event = wanted(dgm, "WNT-9", "live", [btc], kinds=(ops.PRICE_KIND_LAST,), standing=True)
     await hear(lake, dgm, event)
     assert set(dgm.standing) == {"WNT-9"}
@@ -154,7 +150,7 @@ async def test_a_standing_live_want_is_kept_current_until_withdrawn(lake: Lake) 
 
 async def test_what_a_dataset_does_not_serve_is_not_covered(lake: Lake) -> None:
     dgm = dgm_on(lake)
-    btc = await _subject(dgm, venue.BASE)
+    btc = await lake.held(dgm, venue.BASE)
     for dataset, data_type, kinds in (
         ("live", "meridian.v1.Bar", []),
         ("daily", "meridian.v1.Price", [ops.PRICE_KIND_NAV]),
@@ -172,7 +168,7 @@ async def test_a_venue_not_held_is_reported_once_and_named_as_reported_on_each_r
     lake.answer("ResolveVenue", lambda _: ops.ResolveVenueResult(
         found=False, miss_reason=ops.MISS_REASON_NOT_FOUND))  # fmt: skip
     dgm = dgm_on(lake)
-    btc = await _subject(dgm, venue.BASE)
+    btc = await lake.held(dgm, venue.BASE)
     await dgm.record_days([btc], venue.CLOSED, venue.CLOSED)
     await dgm.record_live([btc])
     assert len(lake.on("ReportMissingVenue")) == 1
@@ -185,7 +181,7 @@ async def test_a_venue_not_held_is_reported_once_and_named_as_reported_on_each_r
 
 async def test_a_venue_held_is_named_by_its_id_on_every_row(lake: Lake) -> None:
     dgm = dgm_on(lake)
-    btc = await _subject(dgm, venue.BASE)
+    btc = await lake.held(dgm, venue.BASE)
     await dgm.record_days([btc], venue.CLOSED, venue.CLOSED)
     [asked] = lake.on("ResolveVenue")
     assert [(i.scheme, i.value, i.source) for i in asked.identifiers] == [
@@ -199,42 +195,179 @@ async def test_the_product_map_is_kept_and_read_back_without_resolving_again(
     tmp_path: Path,
 ) -> None:
     lake = Lake()
-    held = venue.ProductMap(tmp_path / "products-synthetic.json")
-    dgm = venue.Dgm(lake, venue.market(), held, clock_ns=lambda: venue.NOW_NS)
-    await dgm.map_products()
-    resolved = len(lake.on("ResolveIdentifier"))
-    assert resolved and held.path is not None and held.path.is_file()
-    again = venue.ProductMap(held.path)
-    assert again.load() and again.ids == held.ids
+    map_ = venue.ProductMap(tmp_path / "products-synthetic.json")
+    dgm = venue.Dgm(lake, venue.market(), map_, clock_ns=lambda: venue.NOW_NS)
+    btc = await lake.held(dgm, venue.BASE)
+    await dgm.record_days([btc], venue.CLOSED, venue.CLOSED)
+    assert lake.on("ResolveInstrument") and lake.on("ResolveIdentifier")
+    assert map_.path is not None and map_.path.is_file()
+    again = venue.ProductMap(map_.path)
+    assert again.load() and again.ids == map_.ids and again.subjects == {btc: venue.BASE}
     second = Lake()
     restarted = venue.Dgm(second, venue.market(), again, clock_ns=lambda: venue.NOW_NS)
     await restarted.map_products()
+    await restarted.record_days([btc], venue.CLOSED, venue.CLOSED)
     assert not second.on("ResolveIdentifier"), "an asset resolved once is not asked again"
+    assert not second.on("ResolveInstrument"), "a subject named once is not read again"
     assert venue.DELISTED not in {m.product for m in again.mapped()}
+
+
+async def test_reading_the_listing_mints_no_record_for_each_asset(lake: Lake) -> None:
+    # The finding of the first build: every listed asset resolved, a record
+    # minted for each the deployment lacked. Now nothing is resolved until a
+    # subject asked for is named, and then only its products' quotes.
+    dgm = dgm_on(lake)
+    await dgm.map_products()
+    assert dgm.products.listed and not lake.on("ResolveIdentifier")
+    assert not dgm.products.mapped()
+    btc = await lake.held(dgm, venue.BASE)
+    await dgm.record_days([btc], venue.CLOSED, venue.CLOSED)
+    quotes = {q.code for q in dgm.products.quotes(venue.BASE)}
+    assert set(dgm.products.ids) == quotes, "only the quotes of the subject's products"
+    assert len(lake.on("ResolveIdentifier")) == len(quotes)
+    assert {m.base_id for m in dgm.products.mapped()} == {btc}
+
+
+async def test_a_custodians_record_is_named_by_its_global_identifier_and_joined(
+    lake: Lake,
+) -> None:
+    # Bitcoin as a custodian's book holds it -- its CAIP-19 and the
+    # custodian's symbol -- never resolved by this venue: the record read
+    # (W3.6), the venue's asset found by the CAIP-19, the venue's code
+    # joined to the record (W3.1), and its close recorded for the subject.
+    held = lake.instruments.hold(
+        "INS-CUSTODIAN",
+        meridian.Identifier(scheme="caip19", value=BITCOIN),
+        meridian.Identifier(scheme="symbol", value="BTC", source=OTHER),
+    )
+    dgm = dgm_on(lake)
+    await hear(lake, dgm, wanted(dgm, "WNT-1", "daily", [held], day=venue.CLOSED))
+    (read,) = lake.on("ResolveInstrument")
+    assert read.instrument_id == held and read.as_of_ns == venue.NOW_NS
+    joined = lake.on("ResolveIdentifier")[0]
+    assert ("symbol", venue.BASE, venue.VENUE) in {(i.scheme, i.value, i.source)
+                                                   for i in joined.identifiers}  # fmt: skip
+    assert not lake.on("ReportMissingInstrument") and not lake.on("DeclineWant")
+    assert dgm.products.subjects == {held: venue.BASE}
+    sent = [p for p in lake.on("RecordPrices") if p.want_id == "WNT-1"]
+    assert sent and {r.meta.subjects[0].entity_id for p in sent for r in p.prices} == {held}
+    product, text = venue.CLOSED_CLOSE
+    assert text in {str(as_decimal(r.price.amount)) for p in sent for r in p.prices
+                    if r.meta.row_key.startswith(f"{product}:1d:")}  # fmt: skip
+
+
+async def test_another_sources_symbol_that_is_the_venues_code_names_the_asset(
+    lake: Lake,
+) -> None:
+    # A token with no global identifier, known to the deployment only by a
+    # custodian's symbol, which is the venue's code: named, and the venue's
+    # symbol reported beside the custodian's.
+    held = lake.instruments.hold(
+        "INS-CUSTODIAN", meridian.Identifier(scheme="symbol", value=venue.EXACT_BASE, source=OTHER)
+    )
+    dgm = dgm_on(lake)
+    declined = await dgm.record_days([held], venue.CLOSED, venue.CLOSED, "meridian.v1.Price")
+    assert not declined and dgm.products.subjects == {held: venue.EXACT_BASE}
+    joined = [(i.scheme, i.value, i.source) for i in lake.on("ResolveIdentifier")[0].identifiers]
+    assert ("symbol", venue.EXACT_BASE, venue.VENUE) in joined
+    assert joined[-1] == ("symbol", venue.EXACT_BASE, OTHER), "beside the one it matched"
+    assert venue.EXACT_CLOSE in {str(as_decimal(r.price.amount)) for r in lake.rows()}
+
+
+async def test_a_record_naming_none_of_the_venues_assets_is_not_covered(lake: Lake) -> None:
+    held = lake.instruments.hold(
+        "INS-EQUITY",
+        meridian.Identifier(scheme="cusip", value="74347X831"),
+        meridian.Identifier(scheme="symbol", value="TQQQ", source=OTHER),
+    )
+    dgm = dgm_on(lake)
+    for _ in range(2):
+        assert await dgm.record_days([held], venue.CLOSED, venue.CLOSED) == {held: "not_covered"}
+    assert len(lake.on("ResolveInstrument")) == 1, "read once until the listing is read again"
+    assert not lake.on("ResolveIdentifier") and not lake.on("ReportMissingInstrument")
+    await dgm.map_products()
+    await dgm.record_days([held], venue.CLOSED, venue.CLOSED)
+    assert len(lake.on("ResolveInstrument")) == 2
+
+
+async def test_a_securitys_ticker_that_is_a_coins_code_names_no_asset(lake: Lake) -> None:
+    # A share whose ticker is the venue's code for a token (ETH is a
+    # share's): by its CUSIP, or by its class, it is no coin, and nothing is
+    # joined to its record.
+    ticker = meridian.Identifier(scheme="symbol", value=venue.EXACT_BASE, source=OTHER)
+    by_cusip = lake.instruments.hold(
+        "INS-SHARE", meridian.Identifier(scheme="cusip", value="297602104"), ticker
+    )
+    dgm = dgm_on(lake)
+    by_class = "INS-SHARE-CLASSED"
+
+    def read(params: Any) -> Any:
+        if params.instrument_id != by_class:
+            return lake.instruments.read(params)
+        record = ops.InstrumentRecord(instrument_id=by_class, identifiers=[ticker],
+                                      asset_class=ops.ASSET_CLASS_EQUITY)  # fmt: skip
+        return ops.ResolveInstrumentResult(found=True, instrument=record)
+
+    lake.answer("ResolveInstrument", read)
+    for subject in (by_cusip, by_class):
+        declined = await dgm.record_days([subject], venue.CLOSED, venue.CLOSED)
+        assert declined == {subject: "not_covered"}
+    assert not lake.on("ResolveIdentifier") and not dgm.products.subjects
+
+
+async def test_with_no_read_of_an_instrument_nothing_is_named(lake: Lake) -> None:
+    # On a runtime from before the ruling of 2026-10-10, which grants a dgm
+    # no read of an instrument's record.
+    def refused(_: Any) -> Any:
+        raise meridian.NotGranted(
+            "platform.reference.query.resolve-instrument", "this plugin holds dgm"
+        )
+
+    lake.answer("ResolveInstrument", refused)
+    dgm = dgm_on(lake)
+    btc = await lake.held(dgm, venue.BASE)
+    assert await dgm.record_days([btc], venue.CLOSED, venue.CLOSED) == {btc: "not_covered"}
+    await dgm.record_days([btc], venue.CLOSED, venue.CLOSED)
+    assert len(lake.on("ResolveInstrument")) == 1 and not dgm.reads_instruments
 
 
 async def test_an_asset_that_does_not_resolve_is_reported_once_and_left_out() -> None:
     lake = Lake()
-
-    def ambiguous(params: Any) -> Any:
-        if any(i.value == venue.AMBIGUOUS for i in params.identifiers):
-            return ops.ResolveIdentifierResult(found=False, miss_reason=ops.MISS_REASON_AMBIGUOUS)
-        return ops.ResolveIdentifierResult(
-            found=True, instrument_id=f"LCL-{params.identifiers[0].value}"
-        )
-
-    lake.answer("ResolveIdentifier", ambiguous)
     dgm = dgm_on(lake)
+    # The quote's identifiers meet two of the deployment's records.
+    await dgm.ensure_mapped()
+    usd = next(q for q in dgm.products.quotes(venue.BASE) if q.currency_code)
+    for n in (1, 2):
+        lake.instruments.hold(f"INS-{usd.code}-{n}", *dgm.identifiers(usd))
+    btc = await lake.held(dgm, venue.BASE)
+    await dgm.record_days([btc], venue.CLOSED, venue.CLOSED)
     await dgm.map_products()
-    await dgm.map_products()
+    await dgm.record_days([btc], venue.CLOSED, venue.CLOSED)
     assert len(lake.on("ReportMissingInstrument")) == 1
-    assert dgm.products.missing == {venue.AMBIGUOUS: "MISS_REASON_AMBIGUOUS"}
-    assert all(venue.AMBIGUOUS not in (m.base.code, m.quote.code) for m in dgm.products.mapped())
+    assert dgm.products.missing == {usd.code: "MISS_REASON_AMBIGUOUS"}
+    assert all(usd.code != m.quote.code for m in dgm.products.mapped())
+    assert lake.rows(), "its products quoted in other assets still recorded"
+
+
+async def test_a_join_meeting_another_record_is_reported_and_the_subject_served(
+    lake: Lake,
+) -> None:
+    dgm = dgm_on(lake)
+    await lake.held(dgm, venue.BASE)
+    held = lake.instruments.hold(
+        "INS-CUSTODIAN", meridian.Identifier(scheme="symbol", value="BTC", source=OTHER),
+        meridian.Identifier(scheme="caip19", value=BITCOIN),
+    )  # fmt: skip
+    declined = await dgm.record_days([held], venue.CLOSED, venue.CLOSED, "meridian.v1.Price")
+    (miss,) = lake.on("ReportMissingInstrument")
+    assert miss.reason == ops.MISS_REASON_AMBIGUOUS
+    assert not declined and dgm.products.subjects == {held: venue.BASE}
+    assert {r.meta.subjects[0].entity_id for r in lake.rows()} == {held}
 
 
 async def test_every_row_names_a_raw_record_its_storage_holds(lake: Lake) -> None:
     dgm = dgm_on(lake)
-    btc = await _subject(dgm, venue.BASE)
+    btc = await lake.held(dgm, venue.BASE)
     await dgm.record_days([btc], venue.CLOSED - timedelta(days=1), venue.CLOSED)
     await dgm.record_live([btc])
     store = dgm.market.client.store
@@ -255,7 +388,7 @@ def test_no_float_reaches_a_row() -> None:
 
 async def test_a_product_the_venue_refuses_leaves_the_subjects_others_recorded(lake: Lake) -> None:
     dgm = dgm_on(lake)
-    btc = await _subject(dgm, venue.BASE)
+    btc = await lake.held(dgm, venue.BASE)
     asked = dgm.market.candles
 
     def refusing(product: str, *days: Any) -> Any:

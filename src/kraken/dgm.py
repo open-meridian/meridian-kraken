@@ -10,13 +10,23 @@ and bar on the UTC day, its day ending at 00:00 UTC (`day_time_zone`
 price and the best bid and offer, recorded at most once a second per subject
 and kind.
 
-**Resolved first** (W3.1, W3.14; products.py): the products' assets, once and
-then daily, and the venue, by its code with the venue as source (the venue
-master's call: Coinbase and Kraken carry `symbol` codes, Kraken no MIC). What
-does not resolve is reported (W3.2, W3.15) and never guessed: a product on an
-asset that did not resolve is left out, and a venue not held is left empty
-on each row with its code beside it as reported, re-resolved at the next
-mapping.
+**Named before it is served** (W3.6, W3.1, W3.14; products.py): each subject
+the lake asks for is the deployment's record, read (a dgm's read from
+contract v18 as ruled 2026-10-10) and named as one of the venue's assets by
+its identifiers -- the venue's own code first, then the global identifier the
+venue states, then another source's symbol that is the venue's code -- never
+guessed from its description. Where the record lacks the venue's
+identifiers, they are reported beside the one it matched (W3.1), so the
+record carries them; where that resolve meets another record, it is reported
+(W3.2) and the subject is still served. A record naming none of the venue's
+assets is declined, not covered. Only the quote assets of a subject's
+products are resolved by their own identifiers, a record minted only where
+none resolves: no record per listed asset. The venue is resolved by its code
+with the venue as source (the venue master's call: Coinbase and Kraken carry
+`symbol` codes, Kraken no MIC). What does not resolve is reported (W3.2,
+W3.15) and never guessed: a product quoted in an asset that did not resolve
+is left out, and a venue not held is left empty on each row with its code
+beside it as reported, re-resolved at the next mapping.
 
 **A row** names the base asset's instrument as its subject, its dataset as
 the instance and the key, the venue's ID, its times and the raw record it was
@@ -36,9 +46,10 @@ volume-weighted price) is left unset with the venue's text beside it.
 **Wants** (W10.7): the lake asks for a business date or a range of the
 daily dataset, or the latest of either (the daily dataset's latest is the
 past week's days the venue has), for subjects; each subject is
-recorded against the want, or declined: `not_covered` where no product's
-base is it, `beyond_history` before the venue's reach, `source_silent`
-where the venue has nothing for it. A standing want keeps its subjects
+recorded against the want, or declined: `not_covered` where its record
+names none of the venue's assets or no product's base is it,
+`beyond_history` before the venue's reach, `source_silent` where the venue
+has nothing for it. A standing want keeps its subjects
 current until it is withdrawn: the live dataset polled at most once a second,
 the daily dataset's forming day every five minutes.
 """
@@ -78,6 +89,12 @@ LATEST_DAYS = 7
 BATCH = 500
 #: How many of the wants heard the Datasets page lists.
 RECENT = 200
+
+#: A record's classes that may be a coin's or a currency's: none yet, a
+#: crypto asset, cash.
+_NOT_A_SECURITY = {ops.ASSET_CLASS_UNSPECIFIED, ops.ASSET_CLASS_CRYPTO_ASSET, ops.ASSET_CLASS_CASH}
+#: Identifiers only a security carries.
+_SECURITY_SCHEMES = {"cusip", "isin", "sedol", "figi"}
 
 _DAILY_KINDS = {ops.PRICE_KIND_CLOSE}
 _LIVE_KINDS = {ops.PRICE_KIND_LAST, ops.PRICE_KIND_BID, ops.PRICE_KIND_ASK}
@@ -144,6 +161,12 @@ class Dgm:
     counts: Counts = field(default_factory=Counts)
     venue: Venue = field(default_factory=Venue)
     heard: deque[Heard] = field(default_factory=lambda: deque(maxlen=RECENT))
+    #: Whether the deployment answers this plugin's ResolveInstrument: a
+    #: runtime from before the ruling of 2026-10-10 does not.
+    reads_instruments: bool = True
+    #: Subjects whose record named none of the venue's assets, until the
+    #: listing is read again.
+    unnamed: set[str] = field(default_factory=set)
 
     # ── Names ────────────────────────────────────────────────────────────
 
@@ -186,7 +209,9 @@ class Dgm:
             )
         return self.venue.venue_id
 
-    def _identifiers(self, asset: Asset) -> list[ops.Identifier]:
+    def identifiers(self, asset: Asset) -> list[ops.Identifier]:
+        """The identifiers the venue's own statements give an asset: its
+        global one, and a token's code as a `symbol` at the venue."""
         named: list[ops.Identifier] = []
         if asset.scheme:
             named.append(meridian.Identifier(scheme=asset.scheme, value=asset.value))
@@ -199,7 +224,7 @@ class Dgm:
     async def _resolve(self, asset: Asset, now: int) -> None:
         cash = asset.kind == "currency"
         found = await self.plugin.resolve_identifier(
-            identifiers=self._identifiers(asset),
+            identifiers=self.identifiers(asset),
             as_of_ns=now,
             stated_asset_class="cash" if cash else "crypto_asset",
             stated_description=asset.name,
@@ -213,23 +238,146 @@ class Dgm:
             await self.plugin.report_missing_instrument(
                 source=self.market.venue,
                 asset_class="cash" if cash else "crypto_asset",
-                identifiers=self._identifiers(asset),
+                identifiers=self.identifiers(asset),
                 as_of_ns=now,
                 reason=found.miss_reason or "not_found",
                 observed_at_ns=now,
             )
         self.products.missing[asset.code] = reason
 
+    async def _quotes(self, code: str, now: int) -> None:
+        """Resolve the quote assets of each product on `code` not resolved yet."""
+        for quote in self.products.quotes(code):
+            if quote.code not in self.products.ids:
+                await self._resolve(quote, now)
+
+    @staticmethod
+    def _same(one: ops.Identifier, other: ops.Identifier) -> bool:
+        return (one.scheme, one.value, one.source) == (other.scheme, other.value, other.source)
+
+    def _asset_of(self, record: ops.InstrumentRecord) -> tuple[Asset, ops.Identifier] | None:
+        """The venue's asset a record is, by its identifiers, and the one it
+        matched: the venue's own code, then the global identifier the venue
+        states, then another source's symbol that is the venue's code -- the
+        last never for a record that is a security (a class other than a
+        crypto asset or cash, or a security's identifier): a ticker can be
+        a coin's code too (ETH is a share's)."""
+        assets = self.products.assets()
+        venue = self.market.venue
+        held = list(record.identifiers)
+        for i in held:
+            if i.scheme == "symbol" and i.source == venue:
+                found = next((a for a in assets if a.code == i.value), None)
+                if found:
+                    return found, i
+        for i in held:
+            found = next((a for a in assets if a.scheme and (a.scheme, a.value)
+                          == (i.scheme, i.value)), None)  # fmt: skip
+            if found:
+                return found, i
+        if record.asset_class not in _NOT_A_SECURITY or any(
+            i.scheme in _SECURITY_SCHEMES for i in held
+        ):
+            return None
+        for i in held:
+            if i.scheme == "symbol" and i.source != venue:
+                found = next((a for a in assets if a.code.upper() == i.value.upper()), None)
+                if found:
+                    return found, i
+        return None
+
+    async def _join(
+        self, subject: str, asset: Asset, matched: ops.Identifier, held: Sequence[ops.Identifier]
+    ) -> None:
+        """Report the venue's identifiers beside the one the record matched
+        (W3.1), where it lacks them: one identifier in common is one
+        security, so the record gains the venue's. Meeting another record is
+        a miss (W3.2), reported once; the subject is served all the same."""
+        own = self.identifiers(asset)
+        if all(any(self._same(o, h) for h in held) for o in own):
+            return
+        named = own + ([] if any(self._same(matched, o) for o in own) else [matched])
+        cash = asset.kind == "currency"
+        now = self.clock_ns()
+        found = await self.plugin.resolve_identifier(
+            identifiers=named,
+            as_of_ns=now,
+            stated_asset_class="cash" if cash else "crypto_asset",
+            stated_description=asset.name,
+        )
+        if found.found and found.instrument_id == subject:
+            return
+        # Matched another record: two records for one asset, which a person
+        # merges (W3.13).
+        miss = ops.MISS_REASON_AMBIGUOUS if found.found else found.miss_reason
+        reason = ops.MissReason.Name(miss or ops.MISS_REASON_AMBIGUOUS)
+        if self.products.missing.get(asset.code) != reason:
+            await self.plugin.report_missing_instrument(
+                source=self.market.venue,
+                asset_class="cash" if cash else "crypto_asset",
+                identifiers=named,
+                as_of_ns=now,
+                reason=miss or ops.MISS_REASON_AMBIGUOUS,
+                observed_at_ns=now,
+            )
+        self.products.missing[asset.code] = reason
+
+    async def _named(self, subject: str) -> str:
+        """The venue's code a subject is, read from its record; empty where
+        the record names none of the venue's assets, or cannot be read."""
+        if not self.reads_instruments:
+            return ""
+        try:
+            found = await self.plugin.resolve_instrument(
+                instrument_id=subject, as_of_ns=self.clock_ns()
+            )
+        except meridian.NotGranted:
+            # A runtime from before the ruling of 2026-10-10 grants a dgm no
+            # read of what an instrument is (W3.6). Asked once, and said on
+            # the Datasets page.
+            log.warning("this dgm may not read an instrument's record; nothing is named")
+            self.reads_instruments = False
+            return ""
+        if not found.found:
+            return ""
+        held = list(found.instrument.identifiers)
+        named = self._asset_of(found.instrument)
+        if named is None:
+            return ""
+        asset, matched = named
+        await self._join(subject, asset, matched, held)
+        return asset.code
+
+    async def name(self, subjects: Iterable[str]) -> None:
+        """Name each subject not named yet as one of the venue's assets, and
+        resolve the quote assets of its products; the map kept in storage."""
+        now = self.clock_ns()
+        changed = False
+        for subject in subjects:
+            if subject in self.products.subjects or subject in self.unnamed:
+                continue
+            code = await self._named(subject)
+            if not code:
+                self.unnamed.add(subject)
+                continue
+            self.products.subjects[subject] = code
+            await self._quotes(code, now)
+            changed = True
+        if changed:
+            self.products.save()
+
     async def map_products(self) -> ProductMap:
-        """Read the venue's listing and resolve each traded asset not resolved
-        yet; the map kept in storage. The venue is asked again too."""
+        """Read the venue's listing, and resolve the quote assets of any
+        product newly serving a subject; the map kept in storage. The venue
+        is asked again too, and a subject not named is read again when
+        next asked."""
         listed = await asyncio.to_thread(self.market.listing)
         now = self.clock_ns()
         self.products.listed = listed
         self.products.read_at_ns = now
-        for asset in self.products.assets():
-            if asset.code not in self.products.ids:
-                await self._resolve(asset, now)
+        self.unnamed.clear()
+        for code in sorted(set(self.products.subjects.values())):
+            await self._quotes(code, now)
         self.products.save()
         self.venue.asked = False
         await self.venue_id()
@@ -393,6 +541,8 @@ class Dgm:
         """Each subject's closes and bars from `first` to `last` from every
         product it is the base of; what was declined, by subject and reason."""
         await self.ensure_mapped()
+        subjects = list(subjects)
+        await self.name(subjects)
         today = utc_day(self.clock_ns() // NANOS_PER_SECOND)
         reach = self.market.session.limits.history_days
         declined: dict[str, str] = {}
@@ -433,6 +583,8 @@ class Dgm:
         """Each subject's last price and best bid and offer now, from every
         product it is the base of."""
         await self.ensure_mapped()
+        subjects = list(subjects)
+        await self.name(subjects)
         asked = set(kinds) or set(_LIVE_KINDS)
         declined: dict[str, str] = {}
         prices: list[Price] = []

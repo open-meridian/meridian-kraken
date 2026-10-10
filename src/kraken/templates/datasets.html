@@ -1,12 +1,12 @@
 {% extends "meridian/base.html" %}
 {% block status %}
-<om-status data-om-header state="{{ 'ok' if data.products_mapped else 'warn' }}" label="{{ data.products_mapped }} products mapped; {{ data.standing_wants }} kept current">{{ data.products_mapped }} products mapped; {{ data.standing_wants }} kept current.</om-status>
+<om-status data-om-header state="{{ 'ok' if data.products_listed and data.reads_instruments else 'warn' }}" label="{{ data.products_mapped }} products mapped; {{ data.standing_wants }} kept current">{{ data.products_mapped }} products mapped; {{ data.standing_wants }} kept current.</om-status>
 {% endblock %}
 {% block content %}
 <section class="panel">
 <div class="panel-body">
 <h2>Served</h2>
-<p class="muted">{{ data.products_mapped }} of {{ data.products_listed }} products mapped{% if data.assets_not_resolved %}; not resolved: {{ data.assets_not_resolved|join(", ") }}{% endif %}. {{ data.entitled_at_vendor }}.</p>
+<p class="muted">{{ data.products_mapped }} of {{ data.products_listed }} products mapped, for {{ data.subjects_named }} {{ "subject" if data.subjects_named == 1 else "subjects" }} the lake asked for{% if data.assets_not_resolved %}; not resolved: {{ data.assets_not_resolved|join(", ") }}{% endif %}. {{ data.entitled_at_vendor }}.{% if not data.reads_instruments %} This deployment does not let the plugin read an instrument's record, so no subject is named.{% endif %}</p>
 </div>
 <table class="one-line">
 <thead><tr><th>Dataset</th><th>Data</th><th class="wide-only">Modes</th><th class="wide-only">Day</th><th class="wide-only">Terms</th><th class="more"><span class="visually-hidden">Details</span></th></tr></thead>
@@ -22,20 +22,26 @@
 <div class="panel-body">
 <h2>Wants</h2>
 <p class="muted">What the lake asked: {{ data.recorded }} rows recorded, {{ data.restated }} restated, {{ data.unchanged }} unchanged; {{ data.declined }} subjects declined{% if data.not_read %}; {{ data.not_read }} values that did not read, left unrecorded{% endif %}.</p>
+{% if data.wants %}<form class="filters" method="get" role="search">
+<input type="search" name="q" value="{{ query }}" placeholder="Search wants" aria-label="Search wants by ID, dataset, what was asked or state">
+<button>Search</button>{% if query %} <a href="?">Clear</a>{% endif %}
+<span class="muted">{{ shown | length }} of {{ data.wants | length }}</span></form>{% endif %}
 </div>
-{% if data.wants %}
+{% if shown %}
 <om-pager>
 <table class="one-line">
 <thead><tr><th>Dataset</th><th>Asked</th><th class="num">Subjects</th><th class="num wide-only">Recorded</th><th class="num wide-only">Declined</th><th>State</th><th class="more"><span class="visually-hidden">Details</span></th></tr></thead>
 <tbody>
-{% for w in data.wants %}
+{% for w in shown %}
 <tr><td><code>{{ w.dataset }}</code></td><td>{{ w.asked }}</td><td class="num">{{ w.subjects }}</td><td class="num wide-only">{{ w.recorded }}</td><td class="num wide-only">{{ w.declined }}</td>
-<td>{% if w.kept_current %}<span class="badge good">Kept current</span>{% elif w.standing %}<span class="badge">Withdrawn</span>{% else %}<span class="badge">Answered</span>{% endif %}</td>
+<td><span class="badge{% if w.kept_current %} good{% endif %}">{{ w.state }}</span></td>
 <td class="more"><details class="row-detail" name="wants"><summary aria-label="Details of want {{ w.want_id }}">…</summary><div class="row-detail-pop"><h3>Want {{ w.want_id }}</h3><dl><dt>Dataset</dt><dd>{{ w.dataset }}</dd><dt>Asked</dt><dd>{{ w.asked }}</dd><dt>Subjects</dt><dd>{{ w.subjects }}</dd><dt>Rows sent</dt><dd>{{ w.recorded }}</dd><dt>Subjects declined</dt><dd>{{ w.declined }}</dd><dt>Heard</dt><dd>{{ w.heard_at.strftime("%Y-%m-%d %H:%M:%S UTC") if w.heard_at else "" }}</dd></dl></div></details></td></tr>
 {% endfor %}
 </tbody>
 </table>
 </om-pager>
+{% elif data.wants %}
+<div class="panel-body"><p class="empty-state">No want matches "{{ query }}": search by its ID, its dataset, what was asked or its state.</p></div>
 {% else %}
 <div class="panel-body"><p class="empty-state">Nothing asked yet: the lake asks when a reader reads what has not been recorded.</p></div>
 {% endif %}

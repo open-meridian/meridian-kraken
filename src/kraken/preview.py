@@ -3,15 +3,18 @@ printed as one HTML file: for looking at them without a deployment.
 
     python -m kraken.preview connection > preview/connection.html
     python -m kraken.preview datasets > preview/datasets.html
+    python -m kraken.preview datasets-search > preview/datasets-search.html
 
 The page links the kit where the dashboard serves it, /.meridian/ui/<version>/,
 so serve it beside the kit to see it styled (meridian-ui's `make serve`);
 opened on its own it is the page without the kit, unstyled, which works too.
 
 There is no sidecar here: the SDK's `Recorder` answers as one would, the
-venue answers from the synthetic exchanges this package carries, and the lake
-asks for a run of days and keeps two subjects current, as a reader would make
-it, so the Datasets page has wants to page through.
+deployment holding two custodian's records (bitcoin and ether, by their
+CAIP-19s and the custodian's symbols), the venue answers from the synthetic
+exchanges this package carries, and the lake asks for a run of days and
+keeps two subjects current, as a reader would make it, so the Datasets page
+has wants to page through; `datasets-search` is the same page searched.
 """
 
 from __future__ import annotations
@@ -40,9 +43,34 @@ from .venue import Kraken
 NOW_NS = 1_791_633_600 * 1_000_000_000
 
 
+#: The deployment's records the lake asks about: a custodian's, by each coin's
+#: CAIP-19 and the custodian's symbol.
+RECORDS = {
+    "LCL-custodian-btc": [
+        ops.Identifier(scheme="caip19", value="bip122:000000000019d6689c085ae165831e93/slip44:0"),
+        ops.Identifier(scheme="symbol", value="BTC", source="custodian"),
+    ],
+    "LCL-custodian-eth": [
+        ops.Identifier(scheme="caip19", value="eip155:1/slip44:60"),
+        ops.Identifier(scheme="symbol", value="ETH", source="custodian"),
+    ],
+}
+#: What the Datasets page's search is shown with, as `datasets-search`.
+SEARCHED = "live"
+
+
+def _record(params: Any) -> Any:
+    held = RECORDS.get(params.instrument_id)
+    record = ops.InstrumentRecord(instrument_id=params.instrument_id, identifiers=held or [])
+    return ops.ResolveInstrumentResult(found=held is not None, instrument=record)
+
+
 def _resolved(params: Any) -> Any:
     if any(i.value == "PLY" for i in params.identifiers):
         return ops.ResolveIdentifierResult(found=False, miss_reason=ops.MISS_REASON_AMBIGUOUS)
+    for instrument_id, held in RECORDS.items():
+        if any(i in held for i in params.identifiers):
+            return ops.ResolveIdentifierResult(found=True, instrument_id=instrument_id)
     return ops.ResolveIdentifierResult(
         found=True, instrument_id=f"LCL-{params.identifiers[0].value[-12:]}"
     )
@@ -55,11 +83,12 @@ def _delivering(want: ops.ObservationsWantedEvent) -> Callable[[Any], Any]:
 async def _worked() -> Dgm:
     lake = Recorder("kraken")
     lake.answer("ResolveIdentifier", _resolved)
+    lake.answer("ResolveInstrument", _record)
     store = RawStore(Path(tempfile.mkdtemp(prefix="kraken-preview-")))
     client = Kraken(store, transport=Synthetic(), clock_ns=lambda: NOW_NS)
     dgm = Dgm(lake, KrakenMarket(client, "synthetic"), ProductMap(), clock_ns=lambda: NOW_NS)
     await dgm.map_products()
-    btc, eth = dgm.products.ids["XXBT"], dgm.products.ids["XETH"]
+    btc, eth = RECORDS
     for n in range(30):
         day = date(2026, 10, 9) - timedelta(days=n % 4)
         want = ops.ObservationsWantedEvent(
@@ -86,12 +115,13 @@ async def _worked() -> Dgm:
 
 def main(argv: list[str]) -> int:
     page = argv[0] if argv else "connection"
-    paths = {"connection": "/", "datasets": "/datasets"}
+    paths = {"connection": "/", "datasets": "/datasets", "datasets-search": "/datasets"}
     if page not in paths:
-        print(f"no page {page!r}: connection or datasets", file=sys.stderr)
+        print(f"no page {page!r}: connection, datasets or datasets-search", file=sys.stderr)
         return 2
     hold(asyncio.run(_worked()))
-    answered = PageClient(pages).get(paths[page], "admin")
+    query = {"q": SEARCHED} if page == "datasets-search" else {}
+    answered = PageClient(pages).get(paths[page], "admin", **query)
     sys.stdout.write(answered.text)
     return 0 if answered.status == 200 else 1
 

@@ -14,23 +14,77 @@ from meridian.suites import Recorder
 
 import venue_cases as venue
 
+#: Another source the deployment holds records from: a custodian's book.
+OTHER = "custodian"
+#: Bitcoin's CAIP-19, by its SLIP-44 coin type: the global identifier a
+#: custodian's record may carry beside its own symbol, as an equity's carries
+#: a CUSIP.
+BITCOIN = "bip122:000000000019d6689c085ae165831e93/slip44:0"
 
-def resolved(params: Any) -> Any:
-    """Each asset resolved to a record named for its strongest identifier."""
-    return ops.ResolveIdentifierResult(
-        found=True, instrument_id=f"LCL-{params.identifiers[0].value}", minted=True
-    )
+
+def _same(one: Any, other: Any) -> bool:
+    return bool((one.scheme, one.value, one.source) == (other.scheme, other.value, other.source))
+
+
+class Instruments:
+    """The deployment's instrument store as the tests hold it. ResolveInstrument
+    reads a record by its ID (W3.6); ResolveIdentifier answers the one record
+    the identifiers meet, the others joined to it, a record minted where they
+    meet none, and ambiguous where they meet two (W3.1)."""
+
+    def __init__(self) -> None:
+        self.records: dict[str, list[ops.Identifier]] = {}
+
+    def hold(self, instrument_id: str, *identifiers: ops.Identifier) -> str:
+        self.records[instrument_id] = list(identifiers)
+        return instrument_id
+
+    def read(self, params: Any) -> Any:
+        held = self.records.get(params.instrument_id)
+        if held is None:
+            return ops.ResolveInstrumentResult(found=False)
+        record = ops.InstrumentRecord(instrument_id=params.instrument_id, identifiers=held)
+        return ops.ResolveInstrumentResult(found=True, instrument=record)
+
+    def resolve(self, params: Any) -> Any:
+        given = list(params.identifiers)
+        met = [key for key, held in self.records.items()
+               if any(_same(g, h) for g in given for h in held)]  # fmt: skip
+        if len(met) > 1:
+            return ops.ResolveIdentifierResult(found=False, miss_reason=ops.MISS_REASON_AMBIGUOUS)
+        if met:
+            held = self.records[met[0]]
+            held.extend(g for g in given if not any(_same(g, h) for h in held))
+            return ops.ResolveIdentifierResult(found=True, instrument_id=met[0])
+        minted = self.hold(f"LCL-{given[0].value}", *given)
+        return ops.ResolveIdentifierResult(found=True, instrument_id=minted, minted=True)
+
+    def answering(self, recorder: Recorder) -> Instruments:
+        recorder.answer("ResolveIdentifier", self.resolve)
+        recorder.answer("ResolveInstrument", self.read)
+        return self
+
+
+async def held(store: Instruments, dgm: Any, code: str) -> str:
+    """A record the deployment holds for one of the venue's assets, carrying
+    the identifiers the venue's own statements give it, as a book's record
+    resolved from this venue would."""
+    await dgm.ensure_mapped()
+    asset = dgm.products.asset(code)
+    assert asset is not None, f"the venue trades no {code}"
+    return store.hold(f"INS-{code}", *dgm.identifiers(asset))
 
 
 class Lake(Recorder):
     """The SDK's recorder, answering a batch as the lake does: a row key new is
     recorded, the same values again unchanged (by decimal value: 764.2 is
-    764.20), a changed value the next version."""
+    764.20), a changed value the next version; and resolving from its own
+    instrument store."""
 
     def __init__(self, instance_id: str = venue.VENUE) -> None:
         super().__init__(instance_id)
         self.versions: dict[tuple[str, str], tuple[int, tuple[Decimal, ...]]] = {}
-        self.answer("ResolveIdentifier", resolved)
+        self.instruments = Instruments().answering(self)
         self.answer("RecordPrices", self._prices)
         self.answer("RecordBars", self._bars)
 
@@ -69,6 +123,9 @@ class Lake(Recorder):
         return [
             r for params in sent for r in (params.prices if row == "RecordPrices" else params.bars)
         ]
+
+    async def held(self, dgm: Any, code: str) -> str:
+        return await held(self.instruments, dgm, code)
 
 
 @pytest.fixture
