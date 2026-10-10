@@ -1,0 +1,35 @@
+{% extends "meridian/base.html" %}
+{% macro fact(label, value, mono=false) %}
+<tr><th scope="row">{{ label }}</th><td title="{{ value }}">{% if mono %}<code>{{ value }}</code>{% else %}{{ value }}{% endif %}</td>
+<td class="more"><details class="row-detail" name="connection"><summary aria-label="{{ label }} in full">…</summary><div class="row-detail-pop"><h3>{{ label }}</h3><p>{{ value }}</p></div></details></td></tr>
+{% endmacro %}
+{% block status %}
+{% if data.mode == "starting" %}
+<om-status data-om-header state="warn" label="Starting">Starting.</om-status>
+{% elif data.healthy %}
+<om-status data-om-header state="ok" label="{{ data.venue }} answers{% if data.mode != 'live' %} ({{ data.mode }}){% endif %}"{% if data.last_answer_at %} at="{{ data.last_answer_at.isoformat() }}" at-label="Last answer"{% endif %}>{{ data.venue }} answers.</om-status>
+{% else %}
+<om-status data-om-header state="bad" label="{{ data.venue }} is not answering">{{ data.venue }} is not answering.</om-status>
+{% endif %}
+{% endblock %}
+{% block content %}
+<section class="panel">
+<div class="panel-body">
+<h2>Connection</h2>
+<p class="muted">How this plugin reaches {{ data.venue }}'s public market data. No key: nothing to sign in to.</p>
+</div>
+<table class="one-line">
+<thead><tr><th>What</th><th>Now</th><th class="more"><span class="visually-hidden">Details</span></th></tr></thead>
+<tbody>
+{% if data.mode == "live" %}{{ fact("Mode", "Live: " ~ data.venue ~ " itself") }}{% else %}{{ fact("Mode", data.mode|capitalize ~ ": answers from files, nothing sent to " ~ data.venue) }}{% endif %}
+{% for endpoint in data.endpoints %}{{ fact(endpoint.name, endpoint.address ~ " (" ~ endpoint.what ~ ")") }}{% endfor %}
+{{ fact("Venue master", data.venue_id if data.venue_held else "Not held by the deployment: rows name the venue as reported", data.venue_held) }}
+{{ fact(data.venue ~ " allows", data.allowed) }}
+{{ fact("This plugin spends", data.spent) }}
+{{ fact("Calls", data.calls ~ " since it started; " ~ data.rate_limited ~ " rate-limited, " ~ data.failures ~ " failed") }}
+{{ fact("Last answer", data.last_answer_at.strftime("%Y-%m-%d %H:%M:%S UTC") if data.last_answer_at else "None yet") }}
+{{ fact("Last error", data.last_error or "None") }}
+</tbody>
+</table>
+</section>
+{% endblock %}

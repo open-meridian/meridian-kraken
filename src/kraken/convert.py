@@ -1,335 +1,237 @@
-"""Kraken's market data, converted into the lake's rows (rows.py).
+"""Kraken's answers, read into the venue's values (market.py): the one place
+Kraken's vocabulary is read.
 
-The edge is the only place Kraken's vocabulary is read. Each converter takes
-what Kraken sent, parsed with Decimals, the pair it was for (assets.py), and
-the raw record it was kept as, and returns rows naming the base asset as
-their subject and pricing it in the quote asset.
+Kraken names everything its own way: assets by legacy codes (`XXBT` for
+bitcoin, whose altname is `XBT`, never `BTC`; `ZUSD` for the dollar), pairs by
+keys built from them (`XXBTZUSD`) and by altnames (`XBTUSD`). A pair names a
+market, not an asset: its base is a row's subject, priced in its quote.
 
-- **The daily close** (the plan's Q5): Kraken has no official close, so a
-  dataset declares its day, the UTC day, and a daily OHLC entry (interval
-  1,440 minutes, its time the bucket's start at 00:00 UTC) gives kind `close`
-  for business date D, valid from D 00:00Z until D+1 00:00Z, its `published`
-  source time the entry's end. Kraken's last entry is the day still forming
-  (past its `last`, its end after now): it has no `published` time and keeps
-  its row key, so each later reading is a restatement under the same key.
-- **Bars** from the same entries, `[time, open, high, low, close, vwap,
-  volume, count]`: Kraken gives a VWAP and a trade count, so both are set.
-- **Trades:** Kraken's `b`/`s` is the **taker's** side, so it is the
-  aggressor as sent; its `m`/`l` (the taker's order type) stays in the raw
-  record. Its trade time is decimal seconds, a JSON number, converted exactly.
-- **Last and quote:** the ticker's `c` is the last trade, but `Ticker`
-  carries no time at all, so the last price is valid from when the plugin
-  received it. `Ticker`'s bid and ask volumes are whole lots (`1.000`), so
-  the REST quote comes from `Depth` (count 1), timestamped per side, whose
-  volumes Kraken states to three decimals (`0.361` where WebSocket v2 said
-  `0.35800347`): converted exactly as stated, and the stream's quote, to
-  eight, is the better one. WebSocket v2's ticker carries a `timestamp`.
-- A value that does not convert -- not a number, or past the contract's
-  Decimal -- is None with the venue's text in an `AsReported`, its scheme
-  naming Kraken's field (`kraken:ohlc.close`).
+**Assets** (the plan's "Identifiers for a pair"; the product owner's ruling of
+2026-10-03 on a venue's balance in a multi-network token):
+
+- **A currency** is a cash instrument, by its ISO 4217 code, for the fiat
+  asset codes Kraken documents (FIAT, below). Kraken's `Assets` does not say
+  which assets are fiat (every one is `aclass: currency`), and a `Z` is no
+  sign of one (`ZAMA` and `ZBCN` are tokens), so the table is the plugin's,
+  keyed by Kraken's codes; a code not in it resolves by its code until a
+  person adds it.
+- **A native coin** carries its CAIP-19 by SLIP-44 coin type (`XXBT`, `XETH`).
+- **Every other token** is Kraken's own instrument: Kraken's public API states
+  no network and no contract for any asset, so none carries a contract's
+  CAIP-19; each is known by its code with source `kraken` alone. Never
+  guessed from a ticker.
+- **A stablecoin is a token,** never its currency (decisions/030): a pair
+  quoted in `USDC` is quoted in Kraken's USDC instrument, and Kraken's own
+  `USDCUSD` is the dataset's price for valuing it (the plan's Q25).
+
+**OHLC** entries are `[time, open, high, low, close, vwap, volume, count]`,
+every figure a string, `time` the day's start at 00:00 UTC; the last entry is
+the day still forming. A day with no trades (`count` 0) has no
+volume-weighted price, whatever Kraken writes in its place.
+
+**The ticker's** `c` is the last trade's price; Kraken states no time and no
+trade identity for it, so it is in force from when its answer arrived and is
+known by that answer's place in the raw record. **The level-1 book's** best
+bid and ask are `Depth`'s first `bids` and `asks`, `[price, volume, time]`, in
+force from the later side's time.
 """
 
 from __future__ import annotations
 
-import dataclasses
-from collections.abc import Iterator, Mapping
-from decimal import Decimal
+from collections.abc import Mapping
+from datetime import date
 from typing import Any
 
-from .rows import (
-    NANOS_PER_DAY,
+from .market import (
     NANOS_PER_SECOND,
-    REGULAR,
-    AsReported,
-    Bar,
-    DatasetDeclaration,
-    DeclaredDay,
-    Money,
-    ObservationMeta,
-    Price,
-    Product,
-    Quote,
-    RawRecordRef,
-    Row,
-    Source,
-    SourceTime,
-    Trade,
-    as_reported,
-    exact,
-    rfc3339_ns,
-    seconds_ns,
-    utc_date,
+    SECONDS_PER_DAY,
+    Asset,
+    Candle,
+    Endpoint,
+    Limits,
+    Listed,
+    Session,
+    Tick,
+    Top,
+    Unread,
+    day_start,
+    number,
 )
+from .venue import BURST, MOST_CANDLES, RATE_PER_SECOND, REST, Kraken, result_for
 
 VENUE = "kraken"
-DAY_MINUTES = 1_440
+NAME = "Kraken"
 
-#: The catalogue (the spec's "The catalogue"; the plan's Q21): a daily dataset
-#: of closes and bars, kept, its day the UTC day; and a live one of last
-#: prices, quotes and trades. The keys are proposals.
-DAILY = DatasetDeclaration(
-    key="daily",
-    vendor="Kraken",
-    data_types=("price", "bar"),
-    modes=("pull",),
-    cadence="P1D",
-    day=DeclaredDay(calendar="UTC", ends_at="00:00"),
+#: Native coins by SLIP-44 coin type, keyed by Kraken's asset code.
+NATIVE: dict[str, str] = {
+    "XXBT": "bip122:000000000019d6689c085ae165831e93/slip44:0",
+    "XETH": "eip155:1/slip44:60",
+}
+
+#: Kraken's fiat asset codes, as its documentation lists them, to ISO 4217.
+FIAT: dict[str, str] = {
+    "ZUSD": "USD",
+    "ZEUR": "EUR",
+    "ZGBP": "GBP",
+    "ZCAD": "CAD",
+    "ZJPY": "JPY",
+    "ZAUD": "AUD",
+    "CHF": "CHF",
+}
+
+LIMITS = Limits(
+    allowed=(
+        "Public REST limited by IP, and OHLC and Trades by pair; about one call a second "
+        "stays inside (Kraken's documentation)"
+    ),
+    spent=f"At most {RATE_PER_SECOND:g} a second, bursts of {BURST}; a rate limit waited out",
+    most_candles=MOST_CANDLES,
+    history_days=MOST_CANDLES,
 )
-LIVE = DatasetDeclaration(
-    key="live",
-    vendor="Kraken",
-    data_types=("price", "quote", "trade"),
-    modes=("pull", "stream"),
-    cadence="PT1S",
-)
-CATALOGUE = (DAILY, LIVE)
 
 
-class _Values:
-    """Converts one record's values, collecting what did not convert."""
-
-    def __init__(self, product: Product, endpoint: str) -> None:
-        self.product, self.endpoint = product, endpoint
-        self.unconverted: list[AsReported] = []
-
-    def number(self, field: str, value: object) -> Decimal | None:
-        converted = exact(value, f"{VENUE}:{self.endpoint}.{field}")
-        if isinstance(converted, AsReported):
-            self.unconverted.append(converted)
-            return None
-        return converted
-
-    def money(self, field: str, value: object) -> Money | None:
-        amount = self.number(field, value)
-        return None if amount is None else self.product.money(amount)
-
-    def positive(self, field: str, value: object) -> Decimal | None:
-        """A quantity, which the contract has more than zero."""
-        amount = self.number(field, value)
-        if amount is not None and amount <= 0:
-            self.unconverted.append(as_reported(f"{VENUE}:{self.endpoint}.{field}", value))
-            return None
-        return amount
-
-    def count(self, field: str, value: object) -> int | None:
-        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
-            return value
-        self.unconverted.append(as_reported(f"{VENUE}:{self.endpoint}.{field}", value))
-        return None
+def asset(code: str) -> Asset:
+    """One Kraken asset, by its code."""
+    if code in FIAT:
+        return Asset(code, "currency", "iso4217", FIAT[code])
+    if code in NATIVE:
+        return Asset(code, "token", "caip19", NATIVE[code])
+    return Asset(code, "token")
 
 
-def _pid(product: Product) -> str:
-    return product.product.value
+def listing(pairs: Mapping[str, Any]) -> list[Listed]:
+    """Every pair Kraken lists, by its key, each side read as an asset. A pair
+    not `online` is kept with its status: its history still converts."""
+    listed: list[Listed] = []
+    for key, item in pairs.items():
+        status = str(item.get("status") or "")
+        listed.append(
+            Listed(
+                product=str(key),
+                base=asset(str(item["base"])),
+                quote=asset(str(item["quote"])),
+                tradable=status == "online",
+                status=status,
+            )
+        )
+    return sorted(listed, key=lambda p: p.product)
 
 
-def daily(
-    product: Product, entries: list[Any], raw_key: str, now_ns: int
-) -> tuple[list[Price], list[Bar]]:
-    """Closes and bars from daily OHLC entries, oldest first."""
-    closes: list[Price] = []
-    bars: list[Bar] = []
+def candles(pair: str, entries: list[Any], raw_key: str) -> list[Candle]:
+    """Daily OHLC entries, oldest first, each naming its place in the raw record."""
+    read: list[Candle] = []
     for entry in sorted(entries, key=lambda e: int(e[0])):
         start = int(entry[0])
-        if start % (DAY_MINUTES * 60):
+        if start % SECONDS_PER_DAY:
             raise ValueError(f"a daily entry at {start} does not start at 00:00 UTC")
-        start_ns = start * NANOS_PER_SECOND
-        end_ns = start_ns + NANOS_PER_DAY
-        date = utc_date(start_ns)
-        published = () if end_ns > now_ns else (SourceTime("published", end_ns),)
-        values = _Values(product, "ohlc")
-        open_, high, low, close, vwap = (
-            values.money(field, entry[i])
-            for field, i in (("open", 1), ("high", 2), ("low", 3), ("close", 4), ("vwap", 5))
-        )
-        volume = values.number("volume", entry[6])
-        if volume is not None and volume < 0:
-            values.unconverted.append(as_reported(f"{VENUE}:ohlc.volume", entry[6]))
-            volume = None
-        trade_count = values.count("count", entry[7])
-        daily_meta = ObservationMeta(
-            row_key=f"close/{_pid(product)}/{date}",
-            subjects=(product.subject(),),
-            source=Source(DAILY.key),
-            valid_from_ns=start_ns,
-            valid_until_ns=end_ns,
-            business_date=date,
-            source_times=published,
-            raw=RawRecordRef(f"{raw_key}#{start}"),
-            unconverted=tuple(u for u in values.unconverted if u.scheme.endswith(".close")),
-        )
-        closes.append(Price(daily_meta, "close", close))
-        bar_meta = dataclasses.replace(
-            daily_meta,
-            row_key=f"bar/{_pid(product)}/P1D/{date}",
-            unconverted=tuple(values.unconverted),
-        )
-        bars.append(
-            Bar(
-                bar_meta,
+        unread: list[Unread] = []
+
+        def figure(field: str, value: object, unread: list[Unread] = unread) -> Any:
+            amount = number(value)
+            if amount is None:
+                unread.append(Unread(f"ohlc.{field}", str(value)))
+            return amount
+
+        open_, high, low, close = (
+            figure(field, entry[i]) for field, i in (("open", 1), ("high", 2), ("low", 3),
+                                                      ("close", 4))
+        )  # fmt: skip
+        volume = figure("volume", entry[6])
+        count = entry[7] if isinstance(entry[7], int) and not isinstance(entry[7], bool) else None
+        if count is None:
+            unread.append(Unread("ohlc.count", str(entry[7])))
+        vwap = figure("vwap", entry[5]) if count else None
+        read.append(
+            Candle(
+                product=pair,
+                start_s=start,
                 open=open_,
                 high=high,
                 low=low,
                 close=close,
                 volume=volume,
                 vwap=vwap,
-                trade_count=trade_count,
+                trade_count=count,
+                raw_key=f"{raw_key}#{start}",
+                unread=tuple(unread),
             )
         )
-    return closes, bars
+    return read
 
 
-def last(product: Product, ticker: Mapping[str, Any], raw_key: str, received_at_ns: int) -> Price:
-    """The ticker's last trade price (`c`), valid from when it was received:
-    Kraken's `Ticker` gives no time."""
-    values = _Values(product, "ticker")
-    price = values.money("c", (ticker.get("c") or [None])[0])
-    return Price(
-        ObservationMeta(
-            row_key=f"last/{_pid(product)}/{received_at_ns}",
-            subjects=(product.subject(),),
-            source=Source(LIVE.key),
-            valid_from_ns=received_at_ns,
-            raw=RawRecordRef(raw_key),
-            unconverted=tuple(values.unconverted),
-        ),
-        "last",
-        price,
+def tick(pair: str, body: Mapping[str, Any], raw_key: str, first_seen_ns: int) -> Tick:
+    """The ticker's last trade (`c`), in force from when Kraken's answer first
+    said it: Kraken's `Ticker` states no time."""
+    stated = (body.get("c") or [None])[0]
+    price = number(stated)
+    return Tick(
+        product=pair,
+        price=price,
+        at_ns=first_seen_ns,
+        stated=False,
+        ident=f"{raw_key.split('/')[1]}#{raw_key.rsplit('#', 1)[-1]}",
+        raw_key=raw_key,
+        unread=() if price is not None else (Unread("ticker.c", str(stated)),),
     )
 
 
-def quote(product: Product, depth: Mapping[str, Any], raw_key: str) -> Quote:
-    """The best bid and ask from `Depth`, each `[price, volume, time]`; in force
-    from the later of the two sides' times. A side with no order is unset."""
-    values = _Values(product, "depth")
-    bids, asks = depth.get("bids") or [], depth.get("asks") or []
-    times = [seconds_ns(side[0][2]) for side in (bids, asks) if side]
-    at = max(times)
-    return Quote(
-        ObservationMeta(
-            row_key=f"quote/{_pid(product)}/{at}",
-            subjects=(product.subject(),),
-            source=Source(LIVE.key),
-            valid_from_ns=at,
-            source_times=(SourceTime("event", at),),
-            raw=RawRecordRef(raw_key),
-            unconverted=tuple(values.unconverted),
-        ),
-        bid=values.money("bids.price", bids[0][0]) if bids else None,
-        ask=values.money("asks.price", asks[0][0]) if asks else None,
-        bid_quantity=values.positive("bids.volume", bids[0][1]) if bids else None,
-        ask_quantity=values.positive("asks.volume", asks[0][1]) if asks else None,
+def top(pair: str, body: Mapping[str, Any], raw_key: str, received_ns: int) -> Top:
+    """`Depth`'s best bid and ask, in force from the later side's time; a side
+    with no order is None."""
+    bids, asks = body.get("bids") or [], body.get("asks") or []
+    unread: list[Unread] = []
+    bid = number(bids[0][0]) if bids else None
+    ask = number(asks[0][0]) if asks else None
+    if bids and bid is None:
+        unread.append(Unread("depth.bids.price", str(bids[0][0])))
+    if asks and ask is None:
+        unread.append(Unread("depth.asks.price", str(asks[0][0])))
+    times = [int(side[0][2]) for side in (bids, asks) if side]
+    at = max(times) * NANOS_PER_SECOND if times else received_ns
+    return Top(
+        product=pair,
+        bid=bid,
+        ask=ask,
+        at_ns=at,
+        stated=bool(times),
+        ident=str(max(times)) if times else str(received_ns),
+        raw_key=raw_key,
+        unread=tuple(unread),
     )
 
 
-#: Kraken's side is the taker's: the aggressor, as sent.
-_AGGRESSOR = {"b": "buy", "s": "sell", "buy": "buy", "sell": "sell"}
+class KrakenMarket:
+    """Kraken's market data, as the shared dgm asks for it."""
 
+    venue = VENUE
+    name = NAME
 
-def _trade(
-    product: Product,
-    endpoint: str,
-    ref_key: str,
-    trade_id: int,
-    side: object,
-    price: object,
-    quantity: object,
-    at: int,
-) -> Trade:
-    values = _Values(product, endpoint)
-    aggressor = _AGGRESSOR.get(str(side), "")
-    if not aggressor:
-        values.unconverted.append(as_reported(f"{VENUE}:{endpoint}.side", side))
-    converted_price = values.money("price", price)
-    converted_quantity = values.positive("volume", quantity)
-    return Trade(
-        ObservationMeta(
-            row_key=f"trade/{_pid(product)}/{trade_id}",
-            subjects=(product.subject(),),
-            source=Source(LIVE.key),
-            valid_from_ns=at,
-            source_times=(SourceTime("event", at),),
-            raw=RawRecordRef(ref_key),
-            unconverted=tuple(values.unconverted),
-        ),
-        price=converted_price,
-        quantity=converted_quantity,
-        attributes=REGULAR,
-        aggressor=aggressor,  # type: ignore[arg-type]
-        source_sequence=trade_id,
-    )
-
-
-def trades(product: Product, entries: list[Any], raw_key: str) -> list[Trade]:
-    """Trades, each `[price, volume, time, side, order type, misc, trade id]`,
-    oldest first as Kraken sends them."""
-    return [
-        _trade(
-            product,
-            "trades",
-            f"{raw_key}#{entry[6]}",
-            int(entry[6]),
-            entry[3],
-            entry[0],
-            entry[1],
-            seconds_ns(entry[2]),
+    def __init__(self, client: Kraken, mode: str = "live") -> None:
+        self.client = client
+        address = REST if mode == "live" else f"{mode}: no call leaves the deployment"
+        self.session = Session(
+            mode=mode,
+            endpoints=(Endpoint("REST", address, "asset pairs, daily OHLC, ticker, depth"),),
+            limits=LIMITS,
+            health=client.health,
         )
-        for entry in sorted(entries, key=lambda e: int(e[6]))
-    ]
 
+    def listing(self) -> list[Listed]:
+        return listing(self.client.asset_pairs().value)
 
-def message(
-    products: Mapping[str, Product], item: Mapping[str, Any], ref_key: str, received_at_ns: int
-) -> Iterator[Row]:
-    """The rows one WebSocket v2 message carries, keyed by v2 symbol: a
-    `ticker` gives the last price and the quote (valid from its timestamp
-    where it has one, else from when it arrived), a `trade` its trades.
-    Status, heartbeats and acknowledgements give none; a refused
-    subscription is raised."""
-    if item.get("method") == "subscribe" and item.get("success") is False:
-        raise ValueError(f"Kraken refused the subscription: {item.get('error')}")
-    channel = item.get("channel")
-    if channel not in ("ticker", "trade"):
-        return
-    for data in item.get("data") or []:
-        product = products.get(str(data.get("symbol", "")))
-        if product is None:
-            continue
-        if channel == "trade":
-            yield _trade(
-                product,
-                "ws.trade",
-                ref_key,
-                int(data["trade_id"]),
-                data.get("side"),
-                data.get("price"),
-                data.get("qty"),
-                rfc3339_ns(str(data["timestamp"])),
-            )
-            continue
-        stamped = data.get("timestamp")
-        at = rfc3339_ns(str(stamped)) if stamped else received_at_ns
-        values = _Values(product, "ws.ticker")
-        meta = ObservationMeta(
-            row_key=f"last/{_pid(product)}/{at}",
-            subjects=(product.subject(),),
-            source=Source(LIVE.key),
-            valid_from_ns=at,
-            source_times=(SourceTime("event", at),) if stamped else (),
-            raw=RawRecordRef(ref_key),
-        )
-        price = values.money("last", data.get("last"))
-        yield Price(dataclasses.replace(meta, unconverted=tuple(values.unconverted)), "last", price)
-        quoted = _Values(product, "ws.ticker")
-        bid = quoted.money("bid", data["bid"]) if data.get("bid") else None
-        ask = quoted.money("ask", data["ask"]) if data.get("ask") else None
-        bid_qty = quoted.positive("bid_qty", data["bid_qty"]) if data.get("bid_qty") else None
-        ask_qty = quoted.positive("ask_qty", data["ask_qty"]) if data.get("ask_qty") else None
-        yield Quote(
-            dataclasses.replace(
-                meta, row_key=f"quote/{_pid(product)}/{at}", unconverted=tuple(quoted.unconverted)
-            ),
-            bid=bid,
-            ask=ask,
-            bid_quantity=bid_qty,
-            ask_quantity=ask_qty,
-        )
+    def candles(self, product: str, first: date, last: date) -> list[Candle]:
+        start, end = day_start(first), day_start(last)
+        fetched = self.client.ohlc(product, start - 1)
+        entries = result_for(fetched.value, product)
+        return [c for c in candles(product, entries, fetched.raw_key) if start <= c.start_s <= end]
+
+    def last(self, product: str) -> Tick:
+        fetched = self.client.ticker(product)
+        kept = self.client.store.get(fetched.raw_key) or {}
+        first_seen = int(kept.get("received_at_ns", fetched.received_at_ns))
+        return tick(product, result_for(fetched.value, product), fetched.raw_key, first_seen)
+
+    def top(self, product: str) -> Top:
+        fetched = self.client.depth(product)
+        return top(product, result_for(fetched.value, product), fetched.raw_key,
+                   fetched.received_at_ns)  # fmt: skip

@@ -1,13 +1,15 @@
 # The plugin's image. It runs beside a sidecar in the deployment's cluster, and
-# reaches nothing but that sidecar and Kraken's public endpoints.
+# reaches nothing but that sidecar and Kraken's public REST.
 #
 # Built on the base image for the SDK this plugin pins: Python and
 # open-meridian, the same version as pyproject.toml's, already installed. So
-# the image's own layers are this plugin and websockets, and an upload sends
-# only those. Move the two together when moving to a new SDK.
+# the image's own layer is this plugin, and an upload sends only that. Move the
+# two together when moving to a new SDK.
 #
-# BASE is for building against a base made locally rather than a released one.
-ARG BASE=ghcr.io/open-meridian/plugin-python:0.16.0
+# BASE is for building against a base made locally rather than a released one:
+# `make image` builds plugin-python:<version>-local from the sibling
+# meridian-python while that version is not published.
+ARG BASE=ghcr.io/open-meridian/plugin-python:0.22.0
 FROM ${BASE}
 WORKDIR /plugin
 # Installed from a mount rather than copied, so the image holds the installed

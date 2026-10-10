@@ -18,9 +18,13 @@ CLAUDE.local.md
 .claude/settings.local.json
 .meridian/
 
-# Real recordings of the venue's responses, which `make live` and `make
-# sample` write: never committed (the venue's terms; the plan's Q11).
+# Real recordings of Kraken's answers: never committed (Kraken asks its
+# permission for non-personal use of its data; the plan's Q11).
+# `make e2e-recorded RECORDED=<dir>` replays a directory kept outside the
+# repository, or here.
 recordings/
 
-# What `make test` leaves behind.
+# What `make test`, `make preview` and `make e2e` leave behind.
 .test.log
+preview/
+.e2e/

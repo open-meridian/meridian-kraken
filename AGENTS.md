@@ -1,46 +1,83 @@
 # kraken
 
-A Meridian plugin, in Python on the open-meridian SDK. It runs beside a
-sidecar in a Meridian deployment and reaches nothing else: what it may publish
-and subscribe to comes from the roles `pyproject.toml` declares under
-`[tool.meridian]`, once a deployment admin approves them.
+A Meridian plugin, in Python on the open-meridian SDK, that puts Kraken's
+public market data into a deployment's lake, its codes converted
+at the edge: a `dgm` (W10, contract v18). It runs beside a sidecar in a
+Meridian deployment and reaches nothing else but that sidecar and Kraken's
+public REST (no key): what it may publish and subscribe to comes
+from the role `pyproject.toml` declares under `[tool.meridian]` (`dgm`), once
+a deployment admin approves it.
 
-- `src/kraken/__main__.py` connects to the sidecar and serves the
-  pages; `src/kraken/page.py` declares them, each a view function
-  and a template under `templates/`, built on the plugin UI kit (below).
-- A save changes what the plugin does, never what it is allowed to do. Roles
-  and dependencies take a new version, which a person approves.
-- Who may use it is not the plugin's to say. A person holds `admin`, `read`
-  or `write` on a plugin, or `admin` and one of the others, granted in the
-  deployment's access groups, the same for every plugin, and opens it from
-  the dashboard's home by Manage (`admin`), Open (`write`) or View (`read`).
-  A session carries the one level chosen, and `request.caller` tells a view
-  that level (`caller.level`, `caller.admin`) and the accounts it reaches:
-  what the person may read (`caller.read`, `caller.may_read`) and write
-  (`caller.write`, `caller.may_write`), both under Open, read alone under
-  View, and none under Manage. Declare no `tags`: a plugin has none, and
-  `meridian plugin upload` refuses a `pyproject.toml` that names them.
+- `src/kraken/__main__.py` connects to the sidecar declaring the catalogue,
+  the storage and the settings (`declaration.py`) and the pages (`page.py`),
+  serves them, hears what the lake wants (`plugin.receive(observations_wanted=...,
+  want_withdrawn=...)`) and keeps each standing want current.
+- **Kraken's vocabulary is read in one place.** `venue.py` is the HTTP
+  client (the standard library's: no third-party dependency), every answer
+  kept as a raw record before anything is read from it (`raw.py`), an answer
+  good only with an empty `error` list (Kraken refuses under HTTP 200);
+  `convert.py` reads Kraken's answers into the venue's values (`market.py`):
+  its legacy asset codes (`XXBT`, `ZUSD`) with the one global identifier its
+  documentation supports, daily OHLC, the ticker and the level-1 book, every
+  figure a `Decimal` from Kraken's text (`json_decimal`, never `float`).
+  `synthetic.py` answers instead of Kraken in synthetic mode: the synthetic
+  exchanges in `src/kraken/synthetic/`, or a developer's recorded ones.
+- **Everything from there to the lake is shared with meridian-coinbase, byte
+  for byte**: `market.py`, `dgm.py`, `products.py`, `raw.py`, and the tests
+  `test_suite.py`, `test_dgm.py`, `test_page.py` and `conftest.py`
+  (`make suite-same` holds them to the sibling's). Change one, change both,
+  in the same session; what differs between the venues belongs in
+  `convert.py`, `venue.py`, `synthetic.py`, `declaration.py`, `page.py`'s
+  names, and `tests/venue_cases.py`, the one test module that knows which
+  venue this is.
+- **The lake's rules, which the SDK's `dgm` suite holds** (`tests/test_suite.py`
+  runs it, unchanged from meridian-coinbase's): resolve every subject before
+  recording (`products.py`: a documented fiat code by `iso4217`, a native
+  coin by its SLIP-44 `caip19`, with its code as a `symbol` whose source is
+  `kraken`; every other token is Kraken's own instrument, by its code alone,
+  since Kraken states no network or contract for any), and report what does
+  not resolve (`report_missing_instrument`), once; resolve the venue by its
+  code (`resolve_venue`, `symbol` `kraken` at `kraken`: Kraken has no MIC), and where the deployment does not hold it leave each row's
+  `venue_id` empty with the code beside it as reported. A price in a
+  currency names it by its ISO 4217 code; a price in any token -- USDT,
+  USDC -- names the token's own instrument (`Money(amount,
+  instrument_id=...)`), never a fiat code: a stablecoin is never its
+  currency. A daily close is keyed by its product and candle
+  (`XXBTZUSD:1d:<start>`), its business date a `datetime.date`, so the day
+  still forming is restated under the same key; a completed day carries its
+  `published` time. Wants are recorded against (`want_id=`) or declined per
+  subject with the reason (`not_covered`, `beyond_history`,
+  `source_silent`).
+- **A `dgm` shows no market data** (ruled 2026-10-03). Its pages, Connection
+  and Datasets, are under Manage alone and show its connection, its
+  datasets, the product map and the wants it heard: never a price, bar or
+  candle (`tests/test_page.py` holds every page to it). Each page declares
+  the record it renders (`answers=`), so each is a read tool on the
+  deployment's MCP surface, `read_connection` and `read_datasets`, answering
+  what the page shows; keep the two in step. Both fit one screen at
+  1440x900 and 390x844 (one-line rows, `om-pager` for the wants).
+- **No real response is committed.** Kraken asks its prior permission for any
+  non-personal commercial use of its public data, so `tests/` and
+  `src/kraken/synthetic/` hold synthetic exchanges, shaped exactly as Kraken
+  sends its answers, with
+  invented values; a developer's recordings stay outside the repository
+  (`make e2e-recorded RECORDED=<dir> DAY=<a day it holds>`).
 - **Declare each page with the levels it serves**, where its view is:
-  `@pages.page(path, title, levels=[...])` for a tab, `@pages.route(path,
-  levels=[...])` for anything else. The dashboard shows a page under the
-  buttons of its levels, and the SDK refuses any other session before the
-  view runs. A page at `admin` configures the plugin and shows no account's
-  data -- nothing the plugin holds for an account, synced or not: holdings,
-  quantities, values, balances, a statement's rows -- and
-  `PageClient.assert_no_account_data`, given that data, holds it to that in
-  the tests. An account's identity (its name, custodian, type, owner, note)
-  is not its data: a Manage page may list every account as a link target.
-- Manage opens on the plugin's Summary, which core draws: its status, then
-  any figures the plugin reports about its own work (`plugin.figures =
-  [meridian.Figure("Connections", 3, state="warn", why="...")]`, sent on its
-  heartbeat). Build no summary page or tiles of your own; report figures
-  only where the plugin has work worth counting.
-- **Hear what the plugin's roles hear with `plugin.receive`**, a handler per
-  row (`custodial_position_updated=...`), and keep nothing of it: the SDK
-  reads the store on every start and after any gap, loss or broken stream,
-  handing what it read on as `heard.caught_up`. A handler sees each change
-  once, in order, and no store number. Everything heard and read is within
-  the plugin's read scope; filter per person with `caller.read` as before.
+  `@pages.page(path, title, levels=[...])`. The dashboard shows a page under
+  the buttons of its levels, and the SDK refuses any other session before
+  the view runs. Declare no `tags`.
+- Manage opens on the plugin's Summary, which core draws, with its raw
+  records per kind. Build no summary page of your own.
+- **A plugin at the edge keeps its raw records in its own storage and moves
+  them past their window through the SDK** (`raw.tend`: a day's unit of
+  `responses`, archived, kept or deleted as `responses_past_window` says,
+  never by deleting files), and says what storage holds (`plugin.stored`).
+  Declare no window setting of your own: the SDK declares
+  `responses_window_days` and `responses_past_window`.
+- **Never a setting from the environment** but the page's port: a setting is
+  declared to the SDK (`declaration.py`) and read from `plugin.settings()`.
+  `synthetic` is a developer's setting, shown only on a development
+  deployment.
 
 This file is for any coding agent working on the plugin, and is committed with
 it for whoever works on it next. It is the canonical one: `CLAUDE.md` and the
@@ -290,10 +327,10 @@ Ask the question that answers what you changed:
 
 | To know | Run |
 |---|---|
-| What a page shows, as the person is served it | `meridian plugin open --instance kraken --level open --print /` for Accounts under Open (`--level view` under View), and `--level manage --print /setup` for Setup under Manage: any path on the plugin, at a level it is declared with |
+| What a page shows, as the person is served it | `meridian plugin open --instance kraken --level manage --print /` for Connection, and `--level manage --print /datasets` for Datasets: any path on the plugin, at a level it is declared with |
 | What the plugin printed or logged since your change | `meridian plugin logs --instance kraken --since <R-1>` |
 | What the sidecar refused it, or what else happened | `meridian plugin events --instance kraken --since <R-1> --json` |
-| What the person sees in a browser | `meridian plugin open --instance kraken --level open`: a link one browser opens once, at that level. Give it to the person, or open it in your browser pane |
+| What the person sees in a browser | `meridian plugin open --instance kraken --level manage`: a link one browser opens once, at that level. Give it to the person, or open it in your browser pane |
 
 `--level` is the home's button the session is opened by: `manage`, `open` or
 `view`. Name it every time. A page answers 403 at a level it is not declared

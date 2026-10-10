@@ -1,15 +1,16 @@
-"""Kraken's public market data as a `dgm`, a connectivity spike.
+"""Kraken's public market data as an Open Meridian `dgm`.
 
-`python -m kraken sample --product XBT/USD` prints converted rows for a
-person to eyeball (sample.py). With no arguments it runs as a plugin: it
-connects to its sidecar declaring its one page and its storage, asks Kraken
-once whether it answers (its status and pairs, kept as raw records in the storage
-the deployment grants), reports what it found as its health, and serves the
-Connectivity page until stopped.
+It connects to the sidecar it is launched beside, declaring its catalogue,
+its storage and its settings (declaration.py) and its pages (page.py), and
+serves them. Then it maps Kraken's products to the deployment's instruments
+(products.py), hears what the lake wants of it and records it, and keeps each
+standing want current (dgm.py), until stopped. Everything goes through the
+sidecar; nothing but Kraken's public REST is called, and in synthetic mode
+not even that (synthetic.py).
 
-It records nothing: the lake's contract (v14) does not exist yet, so there is
-no operation to record a price with. rows.py is the seam where v14's types
-replace the spike's.
+It holds nothing it cannot lose: Kraken's raw responses and the product map
+are kept in the storage the deployment grants it (decisions/028), and a
+restart reads the map back and hears again what the lake wants.
 """
 
 from __future__ import annotations
@@ -18,40 +19,122 @@ import asyncio
 import logging
 import os
 import signal
-import sys
-import tempfile
-import time
-from pathlib import Path
+from collections.abc import Mapping
+from datetime import UTC, datetime
 
 import meridian
 
-from . import assets, sample
-from .declaration import DECLARATION
-from .page import CONNECTIVITY, TITLE, pages
-from .raw import RawStore, storage_root
-from .venue import Kraken, VenueError
+from . import raw
+from .convert import KrakenMarket
+from .declaration import DECLARATION, SYNTHETIC
+from .dgm import Dgm, cancelled
+from .page import TITLE, hold, pages
+from .products import ProductMap
+from .raw import RawStore, storage_root, tend
+from .synthetic import Recorded, Synthetic
+from .venue import Kraken
 
 log = logging.getLogger("kraken")
 
+#: Where a developer's recorded exchanges are replayed from, under the
+#: plugin's storage, when `make e2e-recorded` mounts them there.
+RECORDED = "recorded"
 
-def probe(client: Kraken) -> None:
-    """Ask Kraken for its status, pairs and assets once, and say what it found."""
-    CONNECTIVITY.checked_at = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
-    CONNECTIVITY.raw_records = str(client.store.root)
-    try:
-        status = str(client.system_status().value.get("status", ""))
-        mapped = assets.Pairs(client.asset_pairs().value, client.assets().value).products
-    except (VenueError, OSError) as failed:
-        CONNECTIVITY.state, CONNECTIVITY.detail = "bad", f"Kraken did not answer: {failed}"
-        CONNECTIVITY.problems = [str(failed)]
-    else:
-        online = sum(1 for p in mapped.values() if p.tradable)
-        healthy = status == "online"
-        CONNECTIVITY.state = "ok" if healthy else "warn"
-        CONNECTIVITY.detail = f"Kraken answers; its system is {status or 'not saying'}."
-        CONNECTIVITY.products_listed, CONNECTIVITY.products_online = len(mapped), online
-        CONNECTIVITY.problems = []
-    CONNECTIVITY.calls, CONNECTIVITY.rate_limited = client.calls, client.rate_limited
+
+def market(store: RawStore, synthetic: bool) -> KrakenMarket:
+    """Kraken itself, or in synthetic mode its answers from files: a
+    developer's recorded exchanges where storage holds them, else this
+    package's synthetic ones."""
+    if not synthetic:
+        return KrakenMarket(Kraken(store), "live")
+    recorded = store.root / RECORDED
+    if recorded.is_dir():
+        return KrakenMarket(Kraken(store, transport=Recorded(recorded)), "recorded")
+    return KrakenMarket(Kraken(store, transport=Synthetic()), "synthetic")
+
+
+def product_map(store: RawStore, mode: str) -> ProductMap:
+    held = ProductMap(store.root / f"products-{mode}.json")
+    held.load()
+    return held
+
+
+async def watch_settings(
+    plugin: meridian.Plugin, dgm: Dgm, store: RawStore, configured: asyncio.Event
+) -> None:
+    """Each delivery of the settings: the source switched where synthetic
+    mode changed, its own product map read back from storage, and each day's
+    raw responses past their window moved. Answering from Kraken, the map is
+    made on the first want, never before: nothing is asked of Kraken, and
+    nothing resolved, until the lake wants something of it. In synthetic mode
+    it is made at once, so a developer has the instruments it resolved to
+    read before anything is wanted."""
+    while True:
+        try:
+            await _apply_settings(plugin, dgm, store, configured)
+        except Exception as failed:  # noqa: BLE001 - the stream broke: said, and watched again
+            log.warning("the settings' stream broke, watching again: %s", failed)
+        await asyncio.sleep(2)
+
+
+async def _apply_settings(
+    plugin: meridian.Plugin, dgm: Dgm, store: RawStore, configured: asyncio.Event
+) -> None:
+    async for delivered in plugin.settings():
+        values = delivered.values
+        log.info("settings delivered: synthetic %s", values.get(SYNTHETIC))
+        synthetic = values.get(SYNTHETIC) is True
+        mode = dgm.market.session.mode
+        if synthetic != (mode != "live"):
+            chosen = market(store, synthetic)
+            dgm.use(chosen, product_map(store, chosen.session.mode))
+            log.info("answering from %s", chosen.session.mode)
+        if synthetic and not dgm.products.read_at_ns:
+            try:
+                await dgm.map_products()
+            except Exception as failed:  # noqa: BLE001 - said on its pages, tried on a want
+                log.warning("the synthetic product map was not made: %s", failed)
+        configured.set()
+        await tend_now(plugin, store, values)
+
+
+async def tend_now(plugin: meridian.Plugin, store: RawStore, values: Mapping[str, object]) -> None:
+    window = values.get(f"{raw.KIND}_window_days")
+    past = values.get(f"{raw.KIND}_past_window")
+    await tend(
+        plugin,
+        store,
+        window if isinstance(window, int) else raw.WINDOW_DAYS,
+        past if isinstance(past, str) else "kept",
+        datetime.now(UTC).date(),
+    )
+
+
+async def hear_wants(plugin: meridian.Plugin, dgm: Dgm, configured: asyncio.Event) -> None:
+    """What the lake wants, once the settings have said where to answer from."""
+    await configured.wait()
+    await plugin.receive(observations_wanted=dgm.on_want, want_withdrawn=dgm.on_withdrawn)
+
+
+async def report_health(plugin: meridian.Plugin, dgm: Dgm) -> None:
+    """Say on the heartbeat whether Kraken answers, each minute."""
+    while True:
+        health = dgm.market.session.health
+        healthy = health.last_ok_ns >= health.last_failed_ns
+        detail = f"{dgm.market.name} answers" if healthy else health.last_error
+        try:
+            await plugin.report(healthy=healthy, detail=detail[:200])
+        except meridian.MeridianError as failed:
+            log.warning("health not reported: %s", failed)
+        await asyncio.sleep(60)
+
+
+def _said(task: asyncio.Task[None]) -> None:
+    """A task that stopped, said with why, and the plugin stopped with it: a
+    restart starts it again."""
+    if not task.cancelled() and task.exception() is not None:
+        log.error("stopped: %r", task.exception(), exc_info=task.exception())
+        os._exit(1)
 
 
 async def run() -> None:
@@ -60,24 +143,35 @@ async def run() -> None:
     for stop in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(stop, stopped.set)
 
-    port = int(os.environ.get("REFERENCE_PAGE_PORT", "8000"))
+    port = int(os.environ.get("KRAKEN_PAGE_PORT", "8000"))
     async with await meridian.connect(
         interface=meridian.Interface(port=port, title=TITLE, pages=pages),
         declaration=DECLARATION,
+        settings=DECLARATION.settings,
     ) as plugin:
         log.info("registered as %s, roles %s", plugin.identity.instance_id, plugin.identity.roles)
+        store = RawStore(storage_root())
+        chosen = market(store, synthetic=False)
+        dgm = Dgm(plugin, chosen, product_map(store, chosen.session.mode))
+        hold(dgm)
         served = pages.serve(plugin, port)
-        store = RawStore(storage_root(Path(tempfile.mkdtemp(prefix="kraken-raw-"))))
-        await asyncio.to_thread(probe, Kraken(store))
-        await plugin.report(healthy=CONNECTIVITY.state == "ok", detail=CONNECTIVITY.detail)
+        configured = asyncio.Event()
+        tasks = [
+            asyncio.create_task(watch_settings(plugin, dgm, store, configured)),
+            asyncio.create_task(hear_wants(plugin, dgm, configured)),
+            asyncio.create_task(dgm.keep_current()),
+            asyncio.create_task(report_health(plugin, dgm)),
+        ]
+        for task in tasks:
+            task.add_done_callback(_said)
         await stopped.wait()
         log.info("stopping")
+        for task in tasks:
+            await cancelled(task)
         served.shutdown()
 
 
 def main() -> None:
-    if sys.argv[1:2] == ["sample"]:
-        sys.exit(sample.main(sys.argv[2:]))
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )

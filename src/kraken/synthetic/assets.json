@@ -1,0 +1,74 @@
+{
+ "XXBT": {
+  "aclass": "currency",
+  "altname": "XBT",
+  "decimals": 10,
+  "display_decimals": 4,
+  "collateral_value": 0.99,
+  "status": "enabled"
+ },
+ "XETH": {
+  "aclass": "currency",
+  "altname": "ETH",
+  "decimals": 10,
+  "display_decimals": 4,
+  "collateral_value": 0.99,
+  "status": "enabled"
+ },
+ "ZUSD": {
+  "aclass": "currency",
+  "altname": "USD",
+  "decimals": 4,
+  "display_decimals": 4,
+  "collateral_value": 0.99,
+  "status": "enabled"
+ },
+ "ZEUR": {
+  "aclass": "currency",
+  "altname": "EUR",
+  "decimals": 4,
+  "display_decimals": 4,
+  "collateral_value": 0.99,
+  "status": "enabled"
+ },
+ "USDC": {
+  "aclass": "currency",
+  "altname": "USDC",
+  "decimals": 8,
+  "display_decimals": 4,
+  "collateral_value": 0.99,
+  "status": "enabled"
+ },
+ "TKN": {
+  "aclass": "currency",
+  "altname": "TKN",
+  "decimals": 8,
+  "display_decimals": 4,
+  "collateral_value": 0.99,
+  "status": "enabled"
+ },
+ "QDT": {
+  "aclass": "currency",
+  "altname": "QDT",
+  "decimals": 8,
+  "display_decimals": 4,
+  "collateral_value": 0.99,
+  "status": "enabled"
+ },
+ "PLY": {
+  "aclass": "currency",
+  "altname": "PLY",
+  "decimals": 8,
+  "display_decimals": 4,
+  "collateral_value": 0.99,
+  "status": "enabled"
+ },
+ "OLD": {
+  "aclass": "currency",
+  "altname": "OLD",
+  "decimals": 8,
+  "display_decimals": 4,
+  "collateral_value": 0.99,
+  "status": "enabled"
+ }
+}

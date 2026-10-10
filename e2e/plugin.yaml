@@ -1,0 +1,9 @@
+# The e2e's reader (e2e/reader.py), run from this directory in a container of
+# the plugin's image, which carries the SDK: the harness writes its sidecar and
+# its service, and this gives it its command. E2E_DIR is this directory,
+# absolute, which `make e2e` exports.
+services:
+  reader:
+    entrypoint: ["python", "-u", "/e2e/reader.py"]
+    volumes:
+      - ${E2E_DIR:?make e2e exports E2E_DIR}:/e2e:ro

@@ -1,1 +1,1 @@
-"""A Meridian plugin."""
+"""Kraken's public market data as an Open Meridian dgm."""

@@ -1,54 +1,56 @@
 """Kraken's public market data: the one module that speaks to it.
 
-REST at api.kraken.com/0/public/ (`Time`, `SystemStatus`, `Assets`,
-`AssetPairs`, `OHLC`, `Ticker`, `Depth`, `Trades`) and WebSocket v2 at
-ws.kraken.com/v2 (`ticker` and `trade`, public). No key: nothing here holds a
-credential.
+REST at api.kraken.com/0/public/: `AssetPairs`, `Assets`, `OHLC` (daily, the
+720 most recent entries at most), `Ticker` and `Depth` (the level-1 book). No
+key: nothing here holds a credential, and nothing is sent but the request.
+The standard library's HTTP client; the plugin depends on nothing but the
+SDK.
 
 **Rate limits, honoured.** Kraken limits public REST by IP, and `OHLC` and
-`Trades` by pair too; about one call a second stays inside, which is what
-this client's token bucket spends. Kraken says it is being asked too often in
-its `error` array (`EGeneral:Too many requests`, `EAPI:Rate limit exceeded`),
-under a 200, or with a 429: either is waited out (2, 4, 8 seconds) and asked
-again at most three times, each one counted. A WebSocket that drops is
-reconnected after a growing pause, a few times at most, well inside Kraken's
-150 connections per 10 minutes per IP.
+`Trades` by pair besides; about one call a second stays inside, so this
+client spends at most that from a token bucket. A rate limit -- HTTP 429, or
+Kraken's `EGeneral:Too many requests` under HTTP 200 -- is waited out, 2, 4,
+8 seconds, and asked again at most three times, each one counted.
 
-**Every response is a raw record first.** Each body is kept exactly as its
-bytes arrived, with its status and the request that asked for it, before
-anything is converted (raw.py). A body is parsed with `json_decimal`: Kraken
-sends prices as strings, but its trade times and WebSocket v2's prices are
-JSON numbers, which become Decimals from their own text and never a float.
+**Errors under HTTP 200.** Kraken answers most refusals with status 200 and a
+non-empty `error` list: an answer is good only with an empty one.
+
+**Every response is a raw record first** (raw.py), kept exactly as its bytes
+arrived, with its status and freshness headers, before anything is read from
+it. A body is parsed with `json_decimal`: Kraken sends its figures as
+strings, read as Decimals, and a JSON number, where one appears, from its
+own text.
+
+**Where it answers from.** Kraken itself; or, in synthetic mode, the synthetic
+exchanges this package carries, or a developer's recorded ones, through the
+same requests (synthetic.py).
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
-from contextlib import AbstractAsyncContextManager
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any
 
+from .market import Health, json_decimal
 from .raw import RawStore
-from .rows import json_decimal
 
 REST = "https://api.kraken.com/0/public"
-WEBSOCKET = "wss://ws.kraken.com/v2"
-USER_AGENT = "meridian-kraken/0.1.0 (+https://open-meridian.dev)"
+USER_AGENT = "meridian-kraken (+https://open-meridian.dev)"
 
-#: About one call a second stays inside Kraken's public limits.
+#: About one call a second stays inside Kraken's public allowance.
 RATE_PER_SECOND = 1.0
 BURST = 1
-#: Kraken's most OHLC entries: the 720 most recent, whatever `since` says.
-MAX_OHLC = 720
-#: Kraken's words for being asked too often.
+#: Kraken's most daily OHLC entries: the 720 most recent.
+MOST_CANDLES = 720
 RATE_LIMITED = ("EGeneral:Too many requests", "EAPI:Rate limit exceeded")
-KEPT_HEADERS = ("date", "cache-control", "age", "cf-cache-status", "retry-after", "content-type")
+#: The headers kept with a record: freshness and rate limits.
+KEPT_HEADERS = ("date", "cache-control", "age", "cf-cache-status", "retry-after")
 
 
 @dataclass(frozen=True)
@@ -105,39 +107,27 @@ class RateLimiter:
 
 
 class VenueError(Exception):
-    """Kraken answered with an error, or with something other than asked for."""
+    """Kraken answered with an error, or something other than what was asked
+    for, or did not answer."""
 
-    def __init__(self, call: str, status: int, detail: str, raw_key: str) -> None:
-        super().__init__(f"{call}: {status} {detail} (raw record {raw_key})")
+    def __init__(self, call: str, status: int, detail: str, raw_key: str = "") -> None:
+        kept = f" (raw record {raw_key})" if raw_key else ""
+        super().__init__(f"Kraken's {call}: {status or 'no answer'} {detail}{kept}")
         self.call, self.status, self.detail, self.raw_key = call, status, detail, raw_key
 
 
 @dataclass(frozen=True)
 class Fetched:
-    """A parsed `result`, the key of the raw record it was kept as, and when
-    it arrived."""
+    """A response's `result`, the key of the raw record it was kept as, and
+    when it arrived."""
 
     value: Any
     raw_key: str
     received_at_ns: int
 
 
-class WebSocket(Protocol):
-    async def send(self, message: str) -> None: ...
-    async def recv(self) -> str | bytes: ...
-
-
-Connector = Callable[[str], AbstractAsyncContextManager[WebSocket]]
-
-
-def websockets_connector(url: str) -> AbstractAsyncContextManager[WebSocket]:
-    from websockets.asyncio.client import connect
-
-    return connect(url, open_timeout=10, max_size=2**22, user_agent_header=USER_AGENT)
-
-
 class Kraken:
-    """Kraken's public market data, every response kept."""
+    """Kraken's public REST, every response kept."""
 
     def __init__(
         self,
@@ -151,61 +141,62 @@ class Kraken:
         self.store, self.transport = store, transport
         self.limiter = limiter or RateLimiter(RATE_PER_SECOND, BURST)
         self.clock_ns, self.sleep, self.retries = clock_ns, sleep, retries
-        self.calls = 0
-        self.rate_limited = 0
-        self.reconnected = 0
-        self._kept = 0
+        self.health = Health()
 
-    def _keep(self, key: str, record: dict[str, Any]) -> str:
-        self._kept += 1
-        return self.store.keep(f"{key}/{record['received_at_ns']}-{self._kept}", record)
-
-    def _get(self, call: str, key: str, params: Mapping[str, str] | None = None) -> Fetched:
+    def _get(
+        self, call: str, name: str, params: Mapping[str, str] | None = None, live: bool = False
+    ) -> Fetched:
         url = f"{REST}/{call}" + (("?" + urllib.parse.urlencode(params)) if params else "")
         headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
         for attempt in range(self.retries + 1):
             self.limiter.acquire()
-            self.calls += 1
-            answer = self.transport(url, headers)
+            self.health.waited_seconds = self.limiter.waited
+            self.health.calls += 1
+            try:
+                answer = self.transport(url, headers)
+            except OSError as failed:
+                self._failed(f"{call}: {failed}")
+                raise VenueError(call, 0, str(failed)) from None
             received = self.clock_ns()
             text = answer.body.decode("utf-8", errors="replace")
-            raw_key = self._keep(
-                key,
-                {
-                    "venue": "kraken",
-                    "call": call,
-                    "request": {"method": "GET", "url": url},
-                    "received_at_ns": received,
-                    "status": answer.status,
-                    "headers": {h: answer.headers[h] for h in KEPT_HEADERS if h in answer.headers},
-                    "body": text,
-                },
-            )
             try:
                 parsed = json_decimal(text)
             except json.JSONDecodeError:
                 parsed = None
-            errors = (
-                [str(e) for e in (parsed or {}).get("error", [])]
-                if isinstance(parsed, dict)
-                else []
+            errors = [str(e) for e in parsed.get("error") or []] if isinstance(parsed, dict) else []
+            good = answer.status == 200 and not errors and isinstance(parsed, dict)
+            record = {
+                "venue": "kraken",
+                "call": call,
+                "request": {"method": "GET", "url": url},
+                "received_at_ns": received,
+                "status": answer.status,
+                "headers": {h: answer.headers[h] for h in KEPT_HEADERS if h in answer.headers},
+                "body": text,
+            }
+            raw_key = (
+                self.store.keep_line(call, name, record)
+                if live and good
+                else self.store.keep(call, name, record)
             )
             limited = answer.status == 429 or any(e.startswith(RATE_LIMITED) for e in errors)
             if limited and attempt < self.retries:
-                self.rate_limited += 1
+                self.health.rate_limited += 1
                 self.sleep(2.0 ** (attempt + 1))
                 continue
-            if answer.status != 200 or errors or not isinstance(parsed, dict):
+            if not good:
                 detail = "; ".join(errors) or text[:200]
+                self._failed(f"{call}: {answer.status} {detail}")
                 raise VenueError(call, answer.status, detail, raw_key)
+            assert isinstance(parsed, dict)
+            self.health.last_ok_ns = received
             return Fetched(parsed.get("result"), raw_key, received)
         raise AssertionError("unreachable")
 
-    def time(self) -> Fetched:
-        return self._get("Time", "time")
-
-    def system_status(self) -> Fetched:
-        return self._get("SystemStatus", "status")
+    def _failed(self, why: str) -> None:
+        self.health.failures += 1
+        self.health.last_failed_ns = self.clock_ns()
+        self.health.last_error = why
 
     def assets(self) -> Fetched:
         return self._get("Assets", "assets")
@@ -213,79 +204,22 @@ class Kraken:
     def asset_pairs(self) -> Fetched:
         return self._get("AssetPairs", "pairs")
 
-    def ohlc(self, pair: str, interval: int, since_s: int) -> Fetched:
-        """OHLC entries from `since_s`, `interval` minutes each: Kraken gives
-        the 720 most recent at most, the last one the interval still forming."""
-        return self._get(
-            "OHLC",
-            f"ohlc/{pair}/{interval}",
-            {"pair": pair, "interval": str(interval), "since": str(since_s)},
-        )
+    def ohlc(self, pair: str, since_s: int) -> Fetched:
+        """Daily OHLC entries after `since_s`: the 720 most recent at most, the
+        last one the day still forming."""
+        return self._get("OHLC", pair, {"pair": pair, "interval": "1440", "since": str(since_s)})
 
     def ticker(self, pair: str) -> Fetched:
-        return self._get("Ticker", f"ticker/{pair}", {"pair": pair})
+        return self._get("Ticker", pair, {"pair": pair}, live=True)
 
-    def depth(self, pair: str, count: int = 1) -> Fetched:
-        """The best `count` bids and asks, each with its exact volume and time."""
-        return self._get("Depth", f"depth/{pair}", {"pair": pair, "count": str(count)})
-
-    def trades(self, pair: str, count: int = 100) -> Fetched:
-        return self._get("Trades", f"trades/{pair}", {"pair": pair, "count": str(count)})
-
-    async def stream(
-        self,
-        symbols: Iterable[str],
-        seconds: float,
-        channels: Iterable[str] = ("ticker", "trade"),
-        connector: Connector = websockets_connector,
-        reconnects: int = 3,
-        pause: Callable[[float], Awaitable[None]] = asyncio.sleep,
-    ) -> AsyncIterator[tuple[Any, str, int]]:
-        """WebSocket v2's messages for `seconds`: each parsed, kept as the next
-        line of this stream's raw record, and yielded with its reference key
-        and when it arrived. A dropped connection is opened again, after 1, 2,
-        4 seconds, at most `reconnects` times."""
-        wanted = list(symbols)
-        subscribe = [
-            json.dumps({"method": "subscribe", "params": {"channel": channel, "symbol": wanted}})
-            for channel in channels
-        ]
-        key = f"stream/{self.clock_ns()}"
-        deadline = time.monotonic() + seconds
-        attempt = 0
-        while time.monotonic() < deadline:
-            try:
-                async with connector(WEBSOCKET) as socket:
-                    for message in subscribe:
-                        await socket.send(message)
-                    while (left := deadline - time.monotonic()) > 0:
-                        try:
-                            text = await asyncio.wait_for(socket.recv(), timeout=left)
-                        except TimeoutError:
-                            return
-                        received = self.clock_ns()
-                        if isinstance(text, bytes):
-                            text = text.decode("utf-8")
-                        index = self.store.append(key, {"received_at_ns": received, "text": text})
-                        yield json_decimal(text), f"{key}#{index}", received
-                    return
-            except Exception as dropped:
-                if not _closed(dropped) or attempt >= reconnects:
-                    raise
-            await pause(2.0**attempt)
-            attempt += 1
-            self.reconnected += 1
-
-
-def _closed(error: BaseException) -> bool:
-    """A connection that dropped, which is worth opening again."""
-    closed = type(error).__name__ in {"ConnectionClosed", "ConnectionClosedError"}
-    return closed or isinstance(error, OSError | ConnectionError)
+    def depth(self, pair: str) -> Fetched:
+        """The best bid and ask, each with its volume and time (level 1)."""
+        return self._get("Depth", pair, {"pair": pair, "count": "1"}, live=True)
 
 
 def result_for(result: Mapping[str, Any], pair: str) -> Any:
-    """The one pair's entry in a `result`: Kraken keys it by the pair's own
-    key (`XXBTZUSD`) even when asked by its altname (`XBTUSD`), beside `last`."""
+    """The one pair's entry in a `result`: Kraken keys it by the pair's own key
+    (`XXBTZUSD`) even when asked by its altname, beside `last`."""
     entries = {k: v for k, v in result.items() if k != "last"}
     if pair in entries:
         return entries[pair]

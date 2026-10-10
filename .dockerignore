@@ -9,10 +9,10 @@ AGENTS.md
 CLAUDE.md
 CLAUDE.local.md
 .meridian
-# The tests and the CI that runs them: checked before an upload, never run in
-# the image.
-tests
-.github
-# Real recordings, and what the gates leave behind: never in the image.
-recordings
+# What `make test`, `make preview` and `make e2e` leave behind, and the e2e's
+# own files, which are not the plugin.
 .test.log
+preview/
+.e2e
+e2e/
+recordings/
