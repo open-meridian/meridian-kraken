@@ -18,7 +18,19 @@ them is for the reporting, portfolio, compliance and signal plugins.
   official close, so the close is the last price of the day ending at 00:00
   UTC, for the 720 most recent days; the day still forming is recorded and corrected as it fills.
 - **Live**: the last trade's price and the best bid and offer, at most once
-  a second for each instrument and kind, while a reader keeps asking.
+  a second for each instrument and kind, while a reader keeps asking; and
+  the best bid and offer with their sizes, as a quote, streamed from
+  Kraken's live feed while a reader follows the instrument.
+- **Trades**: every trade of each pair an instrument is the base of,
+  streamed from Kraken's live feed while a reader follows the instrument, each
+  with the side that took liquidity (Kraken names the side that took liquidity, recorded as it is sent). A crypto trade has no
+  condition codes, so every trade counts for a day's open, high, low, close
+  and volume. Trades are a dataset of their own, so you license and keep
+  them apart from live prices.
+
+If the live feed drops, the plugin connects again and reads the trades it
+missed from Kraken's trade history, so nothing is lost and a reader catches up
+from the lake.
 
 It records what readers ask for, not the whole exchange: when a reader asks
 for a price nothing has recorded, the lake asks the plugin, which records it

@@ -7,6 +7,9 @@ The same module in meridian-coinbase and meridian-kraken. Each plugin's
 read kept as the venue sent it -- and `dgm.py`, the same in both, turns them
 into the lake's prices and bars. So the two plugins differ only where their
 venues differ (the plan's "one suite unchanged between the two").
+From contract v19 the same holds for trades and quotes: each plugin reads its
+venue's trades and best bid and offer, from REST and from its stream, into
+the values below, and `dgm.py` turns them into the lake's trades and quotes.
 
 - `Asset`: one of the venue's assets, by its own code, with the one global
   identifier the venue's own statements give it: a currency's ISO 4217 code,
@@ -20,17 +23,24 @@ venues differ (the plan's "one suite unchanged between the two").
   midnight, with a volume-weighted price and a trade count where the venue
   gives them.
 - `Tick`: the last trade's price; `Top`: the best bid and offer (the level-1
-  book).
+  book), with each side's size where the venue states it.
+- `Print`: one trade, its price, quantity and time, with the side the venue
+  names and whose side it is -- the resting order's (Coinbase) or the one
+  that took liquidity (Kraken) -- so the dgm says which side took liquidity
+  in the contract's words, never guessed where the venue names neither.
 - `Unread`: a value that did not read as a number, kept as sent.
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
+
+from .stream import Socket
 
 NANOS_PER_SECOND = 1_000_000_000
 SECONDS_PER_DAY = 86_400
@@ -120,6 +130,13 @@ class Listed:
     #: with its status, since its history still converts.
     tradable: bool = True
     status: str = ""
+    #: Its name on the venue's stream, where that differs from `product`
+    #: (Kraken's v2 symbols); empty where it is the same.
+    stream: str = ""
+
+    @property
+    def stream_name(self) -> str:
+        return self.stream or self.product
 
 
 @dataclass(frozen=True)
@@ -168,7 +185,8 @@ class Tick:
 
 @dataclass(frozen=True)
 class Top:
-    """The best bid and offer, the level-1 book; a side with no order is None."""
+    """The best bid and offer, the level-1 book; a side with no order is None,
+    and a size None where the venue states none."""
 
     product: str
     bid: Decimal | None
@@ -178,6 +196,37 @@ class Top:
     ident: str = ""
     raw_key: str = ""
     unread: tuple[Unread, ...] = ()
+    bid_size: Decimal | None = None
+    ask_size: Decimal | None = None
+
+
+#: Whose side a venue names on a trade.
+MAKER, TAKER = "maker", "taker"
+
+
+@dataclass(frozen=True)
+class Print:
+    """One trade, as the venue stated it."""
+
+    product: str
+    price: Decimal | None
+    quantity: Decimal | None
+    #: When it traded, as the venue stated it.
+    at_ns: int
+    #: The venue's identity for it: its trade ID.
+    ident: str
+    #: The side the venue names, "buy" or "sell", and whose side that is:
+    #: MAKER, the resting order's, or TAKER, the one that took liquidity;
+    #: both empty where the venue names neither.
+    side: str = ""
+    side_of: str = ""
+    raw_key: str = ""
+    unread: tuple[Unread, ...] = ()
+
+    @property
+    def sequence(self) -> int:
+        """The trade ID as a number, where it is one: the venue's order."""
+        return int(self.ident) if self.ident.isdigit() else 0
 
 
 @dataclass
@@ -247,3 +296,25 @@ class Market(Protocol):
     def last(self, product: str) -> Tick: ...
 
     def top(self, product: str) -> Top: ...
+
+    def trades(self, product: str, since_ns: int = 0) -> list[Print]:
+        """The product's trades from `since_ns` to now, oldest first, as far as a
+        few pages of the venue's history reach; its latest page where
+        `since_ns` is 0."""
+        ...
+
+    # The stream (contract v19): its address, what to send for the venue's
+    # stream names, and each message read -- kept as a raw record first --
+    # into the trades and best bids and offers it states.
+
+    @property
+    def stream_address(self) -> str: ...
+
+    async def connect(self, address: str) -> Socket:
+        """The stream opened: the venue itself, or in synthetic mode its
+        messages from files."""
+        ...
+
+    def subscriptions(self, names: Sequence[str]) -> list[str]: ...
+
+    def heard(self, text: str, received_ns: int) -> list[Print | Top]: ...

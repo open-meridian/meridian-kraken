@@ -85,6 +85,7 @@ class ProductMap:
                 quote=Asset(**item["quote"]),
                 tradable=item["tradable"],
                 status=item["status"],
+                stream=item.get("stream", ""),
             )
             for item in held.get("listed", [])
         ]
@@ -153,6 +154,11 @@ class ProductMap:
         """The products each subject is the base asset of, by subject; a
         subject the map holds none for is given an empty list."""
         return {subject: self._serving(subject) for subject in subjects}
+
+    def stream_name(self, product: str) -> str:
+        """A product's name on the venue's stream."""
+        item = next((i for i in self.listed if i.product == product), None)
+        return item.stream_name if item else product
 
     def product(self, product: str) -> Mapped | None:
         for mapped in self.mapped():

@@ -40,10 +40,11 @@ HARNESS_IMAGE ?= ghcr.io/open-meridian/meridian-harness:e4a14fc@sha256:c1d816676
 # Its roles as pyproject.toml declares them (a JSON list's items), so the
 # harness launches it as `meridian plugin upload` would; and the e2e's reader
 # (e2e/reader.py) beside it, holding `custody` beside `reporting` to resolve
-# a custodian's records, run from the same image.
+# a custodian's records, and `signal` to read and hear trades and quotes
+# (contract v19), run from the same image.
 ROLES := $(shell sed -n 's/^roles *= *\[\(.*\)\]/\1/p' pyproject.toml | tr -d ' ')
 PLUGINS := [{"instance": "$(PLUGIN)", "image": "$(IMAGE)", "roles": [$(ROLES)]}, \
-            {"instance": "reader", "image": "$(IMAGE)", "roles": ["custody", "reporting"]}]
+            {"instance": "reader", "image": "$(IMAGE)", "roles": ["custody", "reporting", "signal"]}]
 # What the compose files read: the runtime, and this repository's e2e/.
 export MERIDIAN_RUNTIME_IMAGE := $(RUNTIME_IMAGE)
 export E2E_DIR := $(CURDIR)/e2e
@@ -51,7 +52,8 @@ E2E := docker compose -p $(PLUGIN)-e2e -f .e2e/harness/compose.yaml \
        -f .e2e/harness/plugins.yaml -f e2e/plugin.yaml
 # The files every pair keeps byte for byte: the suite, the dgm and its tests.
 SAME := src/$(PLUGIN)/market.py src/$(PLUGIN)/dgm.py src/$(PLUGIN)/products.py src/$(PLUGIN)/raw.py \
-        tests/test_suite.py tests/test_dgm.py tests/test_page.py tests/test_raw.py tests/conftest.py
+        src/$(PLUGIN)/stream.py tests/test_suite.py tests/test_dgm.py tests/test_page.py \
+        tests/test_raw.py tests/test_stream.py tests/conftest.py
 
 help:
 	@echo "  make ci-local       every gate: lint, tests, plugin check, the image, e2e, and the pair held the same"
@@ -174,10 +176,10 @@ e2e-run:
 preview:
 	@$(DOCKER) build $(SDK_CONTEXT) -f Dockerfile.check --target test -t $(CHECK) . >/dev/null 2>&1
 	@mkdir -p preview
-	@for page in connection datasets datasets-search; do \
+	@for page in connection datasets; do \
 		docker run --rm $(CHECK) python -m $(PLUGIN).preview $$page >preview/$$page.html || exit 1; \
 	done
-	@echo "preview: preview/connection.html, preview/datasets.html, preview/datasets-search.html"
+	@echo "preview: preview/connection.html, preview/datasets.html"
 
 # The pair passes one suite unchanged (plans/the-lake-prices-the-book, row 6):
 # the files it shares are held byte for byte to the sibling's, the package's

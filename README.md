@@ -1,31 +1,30 @@
 # meridian-kraken
 
 Kraken's public market data in an Open Meridian deployment's lake: a `dgm`
-plugin. It records each pair's daily close and bar, and its last trade price
-and best bid and offer, for the instruments a deployment's readers ask about,
-every figure exactly as Kraken stated it and every code converted at the
-edge. No key: Kraken's market data is public.
+plugin. It records each pair's daily close and bar, its last trade price and
+best bid and offer, and from contract v19 every trade and the best bid and
+offer with their sizes, streamed from Kraken's v2 WebSocket, for the
+instruments a deployment's readers ask about, every figure exactly as Kraken
+stated it and every code converted at the edge. No key: Kraken's market data
+is public.
 
 It is the second half of the lake's crypto pair, with
 [meridian-coinbase](https://github.com/open-meridian/meridian-coinbase): the two
 pass one `dgm` suite unchanged between them (meridian-design
-`plans/the-lake-prices-the-book.md`, row 6).
+`plans/the-lake-prices-the-book.md`, rows 6 and 19).
 
-**Status.** 0.1.0, built on open-meridian 0.22.0 (contract v18), which is on
-meridian-python's `main` and not yet on PyPI. Until it is, CI's `check`, `ci`
-and `e2e` jobs fail at installing the SDK or building on its base image; the
-same gates pass locally, where the Makefile builds both from the sibling
-meridian-python checkout (`make ci-local`). Not released, uploaded or
-launched anywhere.
+**Status.** 0.2.0, built on open-meridian 0.23.0 (contract v19). Not
+released, uploaded or launched anywhere.
 
 ## What it does
 
-Two datasets, declared from code in its catalogue (`declaration.py`):
+Three datasets, declared from code in its catalogue (`declaration.py`):
 
 | Dataset | Data | Modes | Day | Kraken's standard terms |
 |---|---|---|---|---|
 | `<instance>:daily` | a close and a bar per pair per day, with its volume-weighted price and trade count; 720 days back | pull, push | `Etc/UTC`, ending at 00:00 | kept, one person's |
-| `<instance>:live` | the last trade's price; the best bid and offer | pull, stream | `Etc/UTC`, ending at 00:00 | kept two days, one person's |
+| `<instance>:live` | the last trade's price and the best bid and offer, as prices; the best bid and offer with their sizes, as a quote | pull, stream | `Etc/UTC`, ending at 00:00 | kept two days, one person's |
+| `<instance>:trades` | every trade | pull, stream | `Etc/UTC`, ending at 00:00 | kept two days, one person's |
 
 - **What the lake wants, recorded.** A reader reads a price nothing has
   recorded; the lake asks this plugin (a want), which records it against the
@@ -94,6 +93,32 @@ Two datasets, declared from code in its catalogue (`declaration.py`):
 - **Exact.** Every figure is a `Decimal` from Kraken's own text, never
   through a float; Kraken's refusals under HTTP 200 are read as refusals. A value
   with more places than the contract's Decimal holds is not rounded.
+- **Trades and quotes, streamed** (contract v19). A standing want of the
+  live or the trades dataset -- a reader following an instrument's latest
+  quote, say -- puts the pairs of its subjects on Kraken's v2 WebSocket
+  (`wss://ws.kraken.com/v2`: `trade`, and `ticker` on each change of the
+  best bid and offer, public), kept open while any want stands. A pair is
+  named there by its `wsname`, with bitcoin's `XBT` as `BTC` and `XDG` as
+  `DOGE`, and its figures are JSON numbers, read from their own text. Every
+  trade is recorded in `trades`, never conflated, and each pair's best bid
+  and offer, with their sizes, in `live` at most once a second; only for
+  subjects under a standing want, in batches of at most 500. A crypto trade
+  has no condition codes: it is regular, eligible to set every statistic of
+  a bar in its venue's view and the consolidated one. Kraken names **the
+  side that took liquidity**, recorded as the aggressor as sent; the taker's
+  order type stays in the raw record. Keyed by its pair and Kraken's trade
+  ID (`XXBTZUSD:t:110938306`), valid from its time, with no business date; a
+  quote by its pair and instant, a side with no order left unset, never
+  zero.
+- **Kept open, with no gap.** A stream that drops, or says nothing for 30
+  seconds, is opened again after a wait doubling from one second to a
+  minute, inside Kraken's 150 reconnects in ten minutes per IP; each time it
+  opens, the trades since the last one recorded are read back from `Trades`
+  (ten pages of 1,000 at most) and recorded, so the lake has no hole and a
+  reader catches up from it by the watermark it last saw. A trade heard
+  twice -- the subscription's snapshot of the last 50, or the history
+  overlapping the stream -- is sent once. A want for a range of trades, or
+  for a quote now, is answered from REST.
 
 ### What it cannot serve
 
@@ -106,6 +131,15 @@ Two datasets, declared from code in its catalogue (`declaration.py`):
 - **A required figure that does not read** (a close past the contract's
   Decimal): the row is left unrecorded and counted on the Datasets page, its
   raw record kept. The SDK's `Price` carries no price left not known.
+- **What the suite asks and Kraken never states.** Of the SDK's `dgm`
+  suite's 21 cases (contract v19), four are not presented, each named with
+  why in `tests/venue_cases.py`, as the suite allows of a case about a kind
+  of data (`about`): `the-makers-side-inverted` (Kraken names the side that
+  took liquidity, never the resting order's; Coinbase presents it),
+  `a-condition-converted` and `a-condition-not-converted` (Kraken states no
+  condition codes: a crypto trade is regular), and `a-trade-withdrawn`
+  (Kraken's feed never withdraws a trade it has stated). The other 17 pass
+  unchanged.
 
 ## Kraken's terms
 
@@ -139,18 +173,21 @@ No secret: Kraken's public market data needs no key.
 A `dgm` shows no market data: viewing prices is for the reading roles.
 
 - **Connection**: where it answers from (Kraken, or synthetic mode), the
-  endpoint, what Kraken allows (public REST by IP, about one call a
-  second) and what the plugin spends of it (at most one a second, a rate
-  limit waited out), its calls, rate limits met and failures, the last error, and
-  the venue master's ID it resolved.
+  endpoints (REST and the stream), what Kraken allows (public REST by IP,
+  about one call a second) and what the plugin spends of it (at most one a
+  second, a rate limit waited out), its calls, rate limits met and
+  failures, the last error, the venue master's ID it resolved, and the
+  stream's session: open or not, how many pairs are on it, how often it
+  opened and dropped, its messages and the last one's time.
 - **Datasets**: each dataset of its catalogue, the pair map (pairs listed,
   and mapped for the subjects the lake asked for; assets not resolved), what
   Kraken entitles it to (public data, no key: every pair it lists), and the
   wants it heard, standing ones first, each with what it recorded and
-  declined, under a search that narrows them.
+  declined.
 
 Both fit one screen at 1440x900 and 390x844, rows one line each, the wants
-paged by the kit's `om-pager`.
+paged by the kit's `om-pager` with its search above them (kit 0.11.0),
+which narrows them as typed.
 
 ### Offered to agents
 
@@ -164,7 +201,9 @@ Every answer Kraken sends, an error as much as a candle, is kept in the
 storage the deployment grants the plugin before anything is read from it,
 with the request that asked for it, its status and freshness headers, and
 when it arrived (`raw.py`); a live answer is a line of its day's file, added
-only when it changed. Each row names its raw record (`RawRecordRef`) and
+only when it changed, and each message of the stream a line of its day's
+file for its channel (a heartbeat, which states nothing, is not kept). Each
+row names its raw record (`RawRecordRef`) and
 where in it the row came from. Kept in units of a UTC day under
 `responses/`, moved past the window through the SDK.
 
@@ -173,23 +212,27 @@ where in it the row came from. Kept in units of a UTC day under
     make e2e
 
 runs the plugin in synthetic mode on core's plugin harness, the runtime and
-harness of core e4a14fc pinned by digest, beside the e2e's reader
+harness of core's v19 main pinned by digest, beside the e2e's reader
 (`e2e/reader.py`, a `reporting` plugin run from the plugin's image, holding
-`custody` to resolve a custodian's records): the catalogue listed, the
-listing read with no record minted for any asset, both datasets licensed and
-the reader entitled, a custodian's bitcoin (by its CAIP-19 and symbol) read
+`custody` to resolve a custodian's records and `signal` to read trades and
+quotes): the catalogue listed, the listing read with no record minted for
+any asset, the three datasets licensed and the reader entitled, a custodian's bitcoin (by its CAIP-19 and symbol) read
 and named, and a day's closes wanted and recorded against the want (XXBTZUSD's in
 dollars, XBTUSDC's on USDC's own instrument, exactly), the dollar declined
-and the euro's rate in dollars recorded, bitcoin's live prices kept current until withdrawn, both read tools answering
-what the pages show, and `store lake` numbering each row with no holes
-(`e2e/run.py` says each step).
+and the euro's rate in dollars recorded, bitcoin's live prices kept current
+until withdrawn, bitcoin's pairs streamed -- the synthetic venue dropping the
+first connection, the plugin opening it again and reading back the trades it
+missed -- every trade recorded once with its aggressor, read over the day and
+after the reader's watermark and heard, and each pair's latest quote with
+its sizes, both read tools answering what the pages show, and `store lake`
+numbering each dataset's rows with no holes (`e2e/run.py` says each step).
 
     make e2e-recorded RECORDED=<dir> DAY=<a day it holds>
 
 runs the same replaying a developer's recorded exchanges, reading the day
 named and holding each row to its shape rather than to the synthetic values:
-a directory of this plugin's raw records of Kraken's real answers, recorded under personal use,
-never committed.
+a directory of this plugin's raw records of Kraken's real answers, REST and
+the stream's messages, recorded under personal use, never committed.
 
 ## Working on it
 

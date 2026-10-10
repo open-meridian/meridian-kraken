@@ -4,8 +4,10 @@ It connects to the sidecar it is launched beside, declaring its catalogue,
 its storage and its settings (declaration.py) and its pages (page.py), and
 serves them. Then it maps Kraken's products to the deployment's instruments
 (products.py), hears what the lake wants of it and records it, and keeps each
-standing want current (dgm.py), until stopped. Everything goes through the
-sidecar; nothing but Kraken's public REST is called, and in synthetic mode
+standing want current (dgm.py) -- from contract v19 its trades and best bid
+and offer from the venue's stream, kept open while a standing want puts
+anything on it (stream.py) -- until stopped. Everything goes through the
+sidecar; nothing but Kraken's public REST and its stream are called, and in synthetic mode
 not even that (synthetic.py).
 
 It holds nothing it cannot lose: Kraken's raw responses and the product map
@@ -160,6 +162,7 @@ async def run() -> None:
             asyncio.create_task(watch_settings(plugin, dgm, store, configured)),
             asyncio.create_task(hear_wants(plugin, dgm, configured)),
             asyncio.create_task(dgm.keep_current()),
+            asyncio.create_task(dgm.keep_streaming()),
             asyncio.create_task(report_health(plugin, dgm)),
         ]
         for task in tasks:

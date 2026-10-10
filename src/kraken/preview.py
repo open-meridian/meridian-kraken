@@ -3,7 +3,6 @@ printed as one HTML file: for looking at them without a deployment.
 
     python -m kraken.preview connection > preview/connection.html
     python -m kraken.preview datasets > preview/datasets.html
-    python -m kraken.preview datasets-search > preview/datasets-search.html
 
 The page links the kit where the dashboard serves it, /.meridian/ui/<version>/,
 so serve it beside the kit to see it styled (meridian-ui's `make serve`);
@@ -14,7 +13,9 @@ deployment holding two custodian's records (bitcoin and ether, by their
 CAIP-19s and the custodian's symbols), the venue answers from the synthetic
 exchanges this package carries, and the lake asks for a run of days and
 keeps two subjects current, as a reader would make it, so the Datasets page
-has wants to page through; `datasets-search` is the same page searched.
+has wants to page through and search (the kit's search, in the browser);
+their products are streamed from the synthetic venue's first connection,
+which drops, so Connection says how the stream has gone.
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ from .dgm import Dgm
 from .page import hold, pages
 from .products import ProductMap
 from .raw import RawStore
+from .stream import Replayed, Socket
 from .synthetic import Synthetic
 from .venue import Kraken
 
@@ -55,8 +57,6 @@ RECORDS = {
         ops.Identifier(scheme="symbol", value="ETH", source="custodian"),
     ],
 }
-#: What the Datasets page's search is shown with, as `datasets-search`.
-SEARCHED = "live"
 
 
 def _record(params: Any) -> Any:
@@ -85,7 +85,8 @@ async def _worked() -> Dgm:
     lake.answer("ResolveIdentifier", _resolved)
     lake.answer("ResolveInstrument", _record)
     store = RawStore(Path(tempfile.mkdtemp(prefix="kraken-preview-")))
-    client = Kraken(store, transport=Synthetic(), clock_ns=lambda: NOW_NS)
+    synthetic = Synthetic()
+    client = Kraken(store, transport=synthetic, clock_ns=lambda: NOW_NS)
     dgm = Dgm(lake, KrakenMarket(client, "synthetic"), ProductMap(), clock_ns=lambda: NOW_NS)
     await dgm.map_products()
     btc, eth = RECORDS
@@ -110,18 +111,25 @@ async def _worked() -> Dgm:
         )
         lake.answer("ObservationsWanted", _delivering(want))
         await lake.receive(observations_wanted=dgm.on_want)
+    first = synthetic.stream_sessions()[0]
+
+    async def replayed(_: str) -> Socket:
+        return Replayed(first, hold=False)
+
+    dgm.stream.connect = replayed
+    await dgm.stream.run(once=True)
+    await dgm.flush()
     return dgm
 
 
 def main(argv: list[str]) -> int:
     page = argv[0] if argv else "connection"
-    paths = {"connection": "/", "datasets": "/datasets", "datasets-search": "/datasets"}
+    paths = {"connection": "/", "datasets": "/datasets"}
     if page not in paths:
-        print(f"no page {page!r}: connection, datasets or datasets-search", file=sys.stderr)
+        print(f"no page {page!r}: connection or datasets", file=sys.stderr)
         return 2
     hold(asyncio.run(_worked()))
-    query = {"q": SEARCHED} if page == "datasets-search" else {}
-    answered = PageClient(pages).get(paths[page], "admin", **query)
+    answered = PageClient(pages).get(paths[page], "admin")
     sys.stdout.write(answered.text)
     return 0 if answered.status == 200 else 1
 

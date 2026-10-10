@@ -4,11 +4,13 @@ The same module in meridian-coinbase and meridian-kraken: what differs
 between the two venues is read in each plugin's `convert.py` into the values
 of market.py, and everything from there to the lake is here, once.
 
-**Two datasets** (declaration.py; the plan's Q21): `daily`, each day's close
-and bar on the UTC day, its day ending at 00:00 UTC (`day_time_zone`
-`Etc/UTC`, `day_end_minute` 0; the plan's Q5); and `live`, the last trade's
-price and the best bid and offer, recorded at most once a second per subject
-and kind.
+**Three datasets** (declaration.py; the plan's Q21 and Q40): `daily`, each
+day's close and bar on the UTC day, its day ending at 00:00 UTC
+(`day_time_zone` `Etc/UTC`, `day_end_minute` 0; the plan's Q5); `live`, the
+last trade's price and the best bid and offer as prices, and the best bid
+and offer with their sizes as a quote, recorded at most once a second per
+subject and kind; and `trades`, every trade, apart from the live prices
+(contract v19).
 
 **Named before it is served** (W3.6, W3.1, W3.14; products.py): each subject
 the lake asks for is the deployment's record, read (a dgm's read from
@@ -50,8 +52,29 @@ recorded against the want, or declined: `not_covered` where its record
 names none of the venue's assets or no product's base is it,
 `beyond_history` before the venue's reach, `source_silent` where the venue
 has nothing for it. A standing want keeps its subjects
-current until it is withdrawn: the live dataset polled at most once a second,
-the daily dataset's forming day every five minutes.
+current until it is withdrawn: the live dataset's prices polled at most once
+a second, the daily dataset's forming day every five minutes.
+
+**Trades and quotes** (contract v19; W10.4, W10.7; the plan's "Trade
+attributes for a crypto trade" and Q40). A standing want of the live or the
+trades dataset puts its subjects' products on the venue's stream
+(stream.py), kept open while any stands; from it each trade is recorded in
+`trades` and each subject's best bid and offer in `live` as a quote, only for
+subjects under a standing want, batched (at most 500 a call) and sent at
+least once a second, a quote at most once a second per product. A crypto
+trade has no condition codes: it is regular, eligible for every statistic
+in both views -- its venue's and a reader's consolidated one -- with no
+characteristic. Its aggressor is the side that took liquidity: the venue's
+side as sent where it names the taker's (Kraken), the other where it names
+the resting order's (Coinbase), and unset where it names neither, never
+guessed from the price. Keyed by its product and the venue's trade ID
+(`BTC-USD:t:812345678`), valid from its event time, with no business date; a
+quote by its product and instant (`BTC-USD:q:<ns>`), a side with no order
+left unset, never zero. Each time the stream opens again after a drop, the
+trades since the last one recorded are read from the venue's REST history
+and recorded, so the lake has no gap and a reader catches up from it by the
+watermark it last saw. A want for a range of trades, or for a quote now, is
+answered from REST.
 """
 
 from __future__ import annotations
@@ -67,16 +90,45 @@ from datetime import date, timedelta
 from typing import Any
 
 import meridian
-from meridian import Bar, Money, ObservationMeta, Price, SourceTime
+from meridian import (
+    Bar,
+    Eligibility,
+    Money,
+    ObservationMeta,
+    Price,
+    Quote,
+    SourceTime,
+    Trade,
+    TradeAttributes,
+)
 from meridian.plugin.v1 import operations_pb2 as ops
 
-from .market import NANOS_PER_SECOND, Asset, Candle, Market, Tick, Top, Unread, utc_day
+from .market import (
+    MAKER,
+    NANOS_PER_SECOND,
+    TAKER,
+    Asset,
+    Candle,
+    Market,
+    Print,
+    Tick,
+    Top,
+    Unread,
+    utc_day,
+)
 from .products import Mapped, ProductMap
+from .stream import SILENT_SECONDS, Stream
 
 log = logging.getLogger(__name__)
 
-DAILY, LIVE = "daily", "live"
+DAILY, LIVE, TRADES = "daily", "live", "trades"
 PRICE, BAR = "meridian.v1.Price", "meridian.v1.Bar"
+TRADE, QUOTE = "meridian.v1.Trade", "meridian.v1.Quote"
+#: A regular crypto trade: no condition codes, so eligible for every
+#: statistic, in its venue's view and the consolidated one.
+EVERY = Eligibility(high_low="eligible", open="eligible", close="eligible", volume="eligible")
+#: The datasets whose standing wants put their subjects on the stream.
+_STREAMED = (LIVE, TRADES)
 #: The live dataset's pace: each subject and kind at most once a second.
 LIVE_EVERY_SECONDS = 1.0
 #: A standing want on the daily dataset: its forming day, every five minutes.
@@ -167,6 +219,32 @@ class Dgm:
     #: Subjects whose record named none of the venue's assets, until the
     #: listing is read again.
     unnamed: set[str] = field(default_factory=set)
+    #: Trades heard and not sent yet, in the order heard; and each product's
+    #: best bid and offer last heard and not sent yet, by product.
+    pending_trades: list[Trade] = field(default_factory=list)
+    pending_quotes: dict[str, Quote] = field(default_factory=dict)
+    #: Each product's last trade recorded: where a reopened stream catches up
+    #: from, and below which a trade heard again is not sent again.
+    last_trade: dict[str, Print] = field(default_factory=dict)
+    #: The products on the stream, by their names on it.
+    streams: dict[str, Mapped] = field(default_factory=dict)
+    stream: Stream = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.stream = Stream(
+            address=self.market.stream_address,
+            connect=self.market.connect,
+            subscriptions=self.market.subscriptions,
+            heard=self.on_message,
+            opened=self.on_opened,
+            clock_ns=self.clock_ns,
+            silent_seconds=self._silent(self.market),
+        )
+
+    @staticmethod
+    def _silent(market: Market) -> float:
+        """How long the venue's stream may say nothing: a replay may for ever."""
+        return SILENT_SECONDS if market.session.mode == "live" else 0.0
 
     # ── Names ────────────────────────────────────────────────────────────
 
@@ -180,8 +258,14 @@ class Dgm:
 
     def use(self, market: Market, products: ProductMap) -> None:
         """Answer from another source (synthetic mode switched): its own map,
-        the venue asked again; standing wants carry over."""
+        the venue asked again, its own stream; standing wants carry over, and
+        are streamed from it once named against its map."""
         self.market, self.products, self.venue = market, products, Venue()
+        self.pending_trades, self.pending_quotes, self.last_trade = [], {}, {}
+        self.streams = {}
+        self.stream.want([])  # nothing asked of the new source until named against its map
+        self.stream.silent_seconds = self._silent(market)
+        self.stream.retarget(market.stream_address, market.connect, market.subscriptions)
 
     # ── Resolving ────────────────────────────────────────────────────────
 
@@ -381,6 +465,7 @@ class Dgm:
         self.products.save()
         self.venue.asked = False
         await self.venue_id()
+        await self.restream()
         return self.products
 
     async def ensure_mapped(self) -> None:
@@ -499,6 +584,66 @@ class Dgm:
             basis="per_unit",
         )
 
+    def aggressor(self, seen: Print) -> str:
+        """The side that took liquidity, in the contract's words: the venue's
+        side as sent where it names the taker's, the other where it names the
+        resting order's, and none where it names neither."""
+        if seen.side not in ("buy", "sell"):
+            return ""
+        if seen.side_of == TAKER:
+            return seen.side
+        if seen.side_of == MAKER:
+            return "sell" if seen.side == "buy" else "buy"
+        return ""
+
+    def trade(self, mapped: Mapped, seen: Print) -> Trade | None:
+        """One trade: a regular crypto trade, eligible for every statistic in
+        both views, its aggressor as the venue said it. None where its price or
+        quantity did not read, or is not more than zero."""
+        if seen.price is None or seen.quantity is None or seen.quantity <= 0:
+            return None
+        return Trade(
+            meta=self._meta(
+                f"{mapped.product}:t:{seen.ident}",
+                mapped,
+                TRADES,
+                seen.at_ns,
+                0,
+                [SourceTime(kind="event", at_ns=seen.at_ns)],
+                seen.raw_key,
+                seen.unread,
+            ),
+            price=self._money(seen.price, mapped),
+            quantity=seen.quantity,
+            attributes=TradeAttributes(consolidated=EVERY, market_centre=EVERY),
+            aggressor=self.aggressor(seen) or None,
+            source_sequence=seen.sequence,
+        )
+
+    def quote(self, mapped: Mapped, best: Top) -> Quote | None:
+        """The best bid and offer with their sizes, in force from its time; a
+        side with no order, or whose price did not read, left unset. None where
+        neither side has one."""
+        if best.bid is None and best.ask is None:
+            return None
+        times = [SourceTime(kind="event", at_ns=best.at_ns)] if best.stated else []
+        return Quote(
+            meta=self._meta(
+                f"{mapped.product}:q:{best.at_ns}",
+                mapped,
+                LIVE,
+                best.at_ns,
+                0,
+                times,
+                best.raw_key,
+                best.unread,
+            ),
+            bid=None if best.bid is None else self._money(best.bid, mapped),
+            ask=None if best.ask is None else self._money(best.ask, mapped),
+            bid_quantity=best.bid_size if best.bid is not None else None,
+            ask_quantity=best.ask_size if best.ask is not None else None,
+        )
+
     # ── Recording ────────────────────────────────────────────────────────
 
     async def _send(self, prices: list[Price], bars: list[Bar], want_id: str) -> int:
@@ -514,6 +659,16 @@ class Dgm:
             self._count(done)
             sent += len(bars[start : start + BATCH])
         return sent
+
+    async def _send_trades(self, trades: list[Trade], quotes: list[Quote], want_id: str) -> None:
+        for start in range(0, len(trades), BATCH):
+            done = await self.plugin.record_trades(trades=trades[start : start + BATCH],
+                                                   want_id=want_id)  # fmt: skip
+            self._count(done)
+        for start in range(0, len(quotes), BATCH):
+            done = await self.plugin.record_quotes(quotes=quotes[start : start + BATCH],
+                                                   want_id=want_id)  # fmt: skip
+            self._count(done)
 
     def _count(self, done: Any) -> None:
         self.counts.recorded += int(getattr(done, "recorded", 0))
@@ -612,6 +767,149 @@ class Dgm:
         await self._send(prices, [], want_id)
         return declined
 
+    async def record_trades(
+        self, subjects: Iterable[str], from_ns: int = 0, until_ns: int = 0, want_id: str = ""
+    ) -> dict[str, str]:
+        """Each subject's trades from `from_ns` to `until_ns` (now where it is
+        0), from the venue's REST history, as far as it reaches: a want for a
+        range, not a stream."""
+        await self.ensure_mapped()
+        subjects = list(subjects)
+        await self.name(subjects)
+        now = self.clock_ns()
+        until = until_ns or now
+        declined: dict[str, str] = {}
+        rows: list[Trade] = []
+        for subject, products in self.products.for_subjects(subjects).items():
+            if not products:
+                declined[subject] = "not_covered"
+                continue
+            if from_ns > now:
+                declined[subject] = "source_silent"
+                continue
+            found, reached = 0, 0
+            for mapped in products:
+                for seen in await self._asked(self.market.trades, mapped.product, from_ns) or []:
+                    reached = min(reached, seen.at_ns) if reached else seen.at_ns
+                    if from_ns <= seen.at_ns < until and (row := self.trade(mapped, seen)):
+                        rows.append(row)
+                        found += 1
+                    elif seen.price is None or seen.quantity is None:
+                        self.counts.unread += 1
+            if not found:
+                before = reached and until <= reached
+                declined[subject] = "beyond_history" if before else "source_silent"
+        await self._send_trades(rows, [], want_id)
+        return declined
+
+    async def record_quotes(self, subjects: Iterable[str], want_id: str = "") -> dict[str, str]:
+        """Each subject's best bid and offer with their sizes now, from every
+        product it is the base of, read from the venue's level-1 book."""
+        await self.ensure_mapped()
+        subjects = list(subjects)
+        await self.name(subjects)
+        declined: dict[str, str] = {}
+        quotes: list[Quote] = []
+        for subject, products in self.products.for_subjects(subjects).items():
+            if not products:
+                declined[subject] = "not_covered"
+                continue
+            before = len(quotes)
+            for mapped in products:
+                best = await self._asked(self.market.top, mapped.product)
+                if best and (row := self.quote(mapped, best)):
+                    quotes.append(row)
+                self.counts.unread += len(best.unread) if best else 0
+            if len(quotes) == before:
+                declined[subject] = "source_silent"
+        await self._send_trades([], quotes, want_id)
+        return declined
+
+    # ── The stream ───────────────────────────────────────────────────────
+
+    async def restream(self) -> None:
+        """Put on the stream the products of every subject under a standing
+        want of the live or the trades dataset, each subject named first; the
+        stream closed where none stands."""
+        streamed = [w for w in self.standing.values() if self._key_of(w.dataset) in _STREAMED]
+        subjects = sorted({s for w in streamed for s in w.subjects})
+        if subjects:
+            await self.ensure_mapped()
+            await self.name(subjects)
+        self.streams = {
+            self.products.stream_name(mapped.product): mapped
+            for products in self.products.for_subjects(subjects).values()
+            for mapped in products
+        }
+        self.stream.want(sorted(self.streams))
+
+    def _hear_trade(self, mapped: Mapped, seen: Print) -> None:
+        last = self.last_trade.get(mapped.product)
+        if last is not None and seen.sequence and seen.sequence <= last.sequence:
+            return  # heard again: from a snapshot, or the history read on reopening
+        row = self.trade(mapped, seen)
+        if row is None:
+            self.counts.unread += 1
+            return
+        self.pending_trades.append(row)
+        self.last_trade[mapped.product] = seen
+
+    async def on_message(self, text: str) -> None:
+        """One message of the stream: its trades kept to send, each product's
+        best bid and offer kept as its latest; sent at once where a batch is
+        full, else by the next pass keeping current."""
+        for seen in self.market.heard(text, self.clock_ns()):
+            mapped = self.streams.get(seen.product)
+            if mapped is None:
+                continue
+            if isinstance(seen, Print):
+                self._hear_trade(mapped, seen)
+            elif row := self.quote(mapped, seen):
+                self.pending_quotes[mapped.product] = row
+        if len(self.pending_trades) >= BATCH:
+            await self.flush()
+
+    async def on_opened(self, names: Sequence[str]) -> None:
+        """The stream opened: each product's trades since the last one recorded
+        read from the venue's REST history, so a drop leaves the lake no gap. A
+        product with none recorded yet has no gap to fill."""
+        for name in names:
+            mapped = self.streams.get(name)
+            last = self.last_trade.get(mapped.product) if mapped else None
+            if mapped is None or last is None:
+                continue
+            for seen in await self._asked(self.market.trades, mapped.product, last.at_ns) or []:
+                self._hear_trade(mapped, seen)
+        await self.flush()
+
+    async def flush(self) -> None:
+        """Send the trades heard, in batches, and each product's latest best bid
+        and offer: at most once a pass, so a quote at most once a second."""
+        trades, self.pending_trades = self.pending_trades, []
+        quotes, self.pending_quotes = list(self.pending_quotes.values()), {}
+        if not trades and not quotes:
+            return
+        try:
+            await self._send_trades(trades, quotes, "")
+        except (meridian.MeridianError, ValueError) as refused:
+            # Refused whole (W10.4): said, and the stream goes on; a trade the
+            # lake did not take is read back from the history next time the
+            # stream opens again only if it drops, so it is logged here.
+            log.warning("%d trades and %d quotes not recorded: %s",
+                        len(trades), len(quotes), refused)  # fmt: skip
+
+    async def keep_streaming(
+        self, sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
+    ) -> None:
+        """Keep the stream open while anything stands on it, until cancelled; a
+        failure said, and the stream opened again a second later."""
+        while True:
+            try:
+                await self.stream.run()
+            except Exception as failed:  # noqa: BLE001 - said, and opened again
+                log.warning("the stream stopped, opening it again: %s", failed)
+            await sleep(LIVE_EVERY_SECONDS)
+
     # ── Wants ────────────────────────────────────────────────────────────
 
     async def _decline(self, want_id: str, declined: dict[str, str]) -> None:
@@ -650,6 +948,17 @@ class Dgm:
                   len(declined), want.standing, self.clock_ns())
         )  # fmt: skip
 
+    @staticmethod
+    def _serves(key: str, data_type: str, kinds: tuple[int, ...]) -> bool:
+        """Whether a want of `data_type` and `kinds` asks of `key` what it holds."""
+        if key == DAILY:
+            return data_type in ("", PRICE, BAR) and (not kinds or bool(set(kinds) & _DAILY_KINDS))
+        if key == LIVE:
+            if data_type == QUOTE:
+                return True
+            return data_type in ("", PRICE) and (not kinds or bool(set(kinds) & _LIVE_KINDS))
+        return key == TRADES and data_type in ("", TRADE)
+
     async def _answer(
         self,
         want: ops.ObservationsWantedEvent,
@@ -657,19 +966,25 @@ class Dgm:
         subjects: list[str],
         kinds: tuple[int, ...],
     ) -> dict[str, str]:
-        served = _DAILY_KINDS if key == DAILY else _LIVE_KINDS if key == LIVE else set()
-        if (
-            not served
-            or want.data_type not in ("", PRICE, BAR)
-            or (want.data_type == BAR and key != DAILY)
-            or (kinds and not set(kinds) & served)
-        ):
+        if not self._serves(key, want.data_type, kinds):
             return {s: "not_covered" for s in subjects}
         if want.standing:
             self.standing[want.want_id] = Standing(
                 want.want_id, want.dataset, want.data_type, tuple(subjects), kinds,
                 self.clock_ns(),
             )  # fmt: skip
+            if key in _STREAMED:
+                await self.restream()
+        if key == TRADES:
+            if want.standing:
+                # Kept current from the stream: nothing to record yet.
+                served = self.products.for_subjects(subjects)
+                return {s: "not_covered" for s in subjects if not served[s]}
+            return await self.record_trades(
+                subjects, want.valid_from_ns, want.valid_until_ns, want.want_id
+            )
+        if key == LIVE and want.data_type == QUOTE:
+            return await self.record_quotes(subjects, want.want_id)
         if key == LIVE:
             return await self.record_live(subjects, kinds, want.want_id)
         if want.business_date:
@@ -688,15 +1003,26 @@ class Dgm:
         return await self.record_days(subjects, first, today, want.data_type, want.want_id)
 
     async def on_withdrawn(self, heard: meridian.Heard[ops.WantWithdrawnEvent]) -> None:
-        """A standing want withdrawn: its subjects are no longer kept current."""
-        self.standing.pop(heard.message.want_id, None)
+        """A standing want withdrawn: its subjects are no longer kept current,
+        nor streamed unless another stands for them."""
+        withdrawn = self.standing.pop(heard.message.want_id, None)
+        if withdrawn is not None and self._key_of(withdrawn.dataset) in _STREAMED:
+            await self.restream()
 
     # ── Keeping current ──────────────────────────────────────────────────
 
     async def current(self, daily: bool = False) -> None:
-        """One pass keeping each standing want's subjects current: the live
-        dataset's, and with `daily` the daily dataset's forming day."""
-        live = [w for w in self.standing.values() if self._key_of(w.dataset) == LIVE]
+        """One pass keeping each standing want's subjects current: what the
+        stream heard sent, the live dataset's prices polled, and with `daily`
+        the daily dataset's forming day. A standing want of quotes or trades
+        is kept current by the stream alone, put on it again here where the
+        source changed under it."""
+        await self.flush()
+        if not self.streams and any(self._key_of(w.dataset) in _STREAMED
+                                    for w in self.standing.values()):  # fmt: skip
+            await self.restream()
+        live = [w for w in self.standing.values()
+                if self._key_of(w.dataset) == LIVE and w.data_type in ("", PRICE)]  # fmt: skip
         for subjects, kinds in _grouped(live):
             await self.record_live(subjects, kinds)
         if daily:

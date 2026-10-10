@@ -107,3 +107,31 @@ def test_recorded_exchanges_are_replayed_from_a_plugins_raw_records(tmp_path: Pa
     assert [e[0] for e in entries] == [1791417600, 1791504000]
     assert entries[0][4] == "62001.40000"
     assert replay.ticker("XXBTZUSD").value["XXBTZUSD"]["c"][0] == "61988.90000"
+
+
+def test_trades_are_asked_a_thousand_at_a_time_since_a_time(tmp_path: Path) -> None:
+    empty = b'{"error":[],"result":{"XXBTZUSD":[],"last":"0"}}'
+    scripted = Scripted(Response(200, {}, empty), Response(200, {}, empty))
+    client = _client(tmp_path, scripted)
+    client.trades("XXBTZUSD")
+    client.trades("XXBTZUSD", 1_791_633_590_000_000_000)
+    assert scripted.asked[0].endswith("/Trades?pair=XXBTZUSD&count=1000")
+    assert scripted.asked[1].endswith("/Trades?pair=XXBTZUSD&count=1000&since=1791633590000000000")
+
+
+def test_a_recording_replays_its_stream_and_its_trades(tmp_path: Path) -> None:
+    from kraken.convert import KrakenMarket
+
+    kept = KrakenMarket(_client(tmp_path / "kept", Synthetic()), "synthetic")
+    kept.client.trades("XXBTZUSD")
+    said = ['{"channel":"status","type":"update","data":[]}',
+            '{"channel":"trade","type":"update","data":[{"symbol":"BTC/USD","side":"buy",'
+            '"price":1.5,"qty":0.1,"ord_type":"limit","trade_id":9,'
+            '"timestamp":"2026-10-10T11:00:00Z"}]}']  # fmt: skip
+    for at, text in enumerate(said):
+        kept.heard(text, 1_791_633_600_000_000_000 + at)
+    replay = Recorded(tmp_path / "kept" / "responses")
+    assert replay.stream_sessions() == [said]
+    trades = result_for(_client(tmp_path / "replayed", replay).trades("XXBTZUSD").value,
+                        "XXBTZUSD")  # fmt: skip
+    assert [str(t[6]) for t in trades][-1] == "110938306"

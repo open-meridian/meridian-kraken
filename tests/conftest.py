@@ -87,6 +87,8 @@ class Lake(Recorder):
         self.instruments = Instruments().answering(self)
         self.answer("RecordPrices", self._prices)
         self.answer("RecordBars", self._bars)
+        self.answer("RecordTrades", lambda params: self._record(params.trades, "trade"))
+        self.answer("RecordQuotes", lambda params: self._record(params.quotes, "quote"))
 
     def _prices(self, params: Any) -> Any:
         return self._record(params.prices, "price")
@@ -102,6 +104,12 @@ class Lake(Recorder):
         for row in rows:
             if kind == "price":
                 values: tuple[Decimal, ...] = (as_decimal(row.price.amount),)
+            elif kind == "trade":
+                values = (as_decimal(row.price.amount), as_decimal(row.quantity),
+                          Decimal(int(row.cancelled)))  # fmt: skip
+            elif kind == "quote":
+                values = tuple(as_decimal(getattr(row, side).amount) if row.HasField(side)
+                               else Decimal(-1) for side in ("bid", "ask"))  # fmt: skip
             else:
                 values = tuple(as_decimal(getattr(row, f).amount) for f in ("open", "high",
                                "low", "close")) + (as_decimal(row.volume),)  # fmt: skip
@@ -115,14 +123,15 @@ class Lake(Recorder):
             else:
                 self.versions[key] = (held[0] + 1, values)
                 restated += 1
-        result = ops.RecordPricesResult if kind == "price" else ops.RecordBarsResult
+        results = {"price": ops.RecordPricesResult, "bar": ops.RecordBarsResult,
+                   "trade": ops.RecordTradesResult, "quote": ops.RecordQuotesResult}  # fmt: skip
+        result = results[kind]
         return result(recorded=recorded, restated=restated, unchanged=unchanged)
 
     def rows(self, row: str = "RecordPrices") -> list[Any]:
-        sent = self.on(row)
-        return [
-            r for params in sent for r in (params.prices if row == "RecordPrices" else params.bars)
-        ]
+        field = {"RecordPrices": "prices", "RecordBars": "bars", "RecordTrades": "trades",
+                 "RecordQuotes": "quotes"}[row]  # fmt: skip
+        return [r for params in self.on(row) for r in getattr(params, field)]
 
     async def held(self, dgm: Any, code: str) -> str:
         return await held(self.instruments, dgm, code)

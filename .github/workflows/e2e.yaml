@@ -6,10 +6,6 @@
 #
 # The job is named for the make target that runs it locally: `make e2e`, part
 # of ci-local and so of the pre-push hook.
-#
-# Red until plugin-python 0.22.0 is published with open-meridian 0.22.0: the
-# plugin's image is built on it, and locally `make image` builds that base
-# from the sibling meridian-python checkout instead.
 name: e2e
 
 on:

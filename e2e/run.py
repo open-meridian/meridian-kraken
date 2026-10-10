@@ -1,17 +1,18 @@
 """`make e2e` and `make e2e-recorded`: the plugin end to end on core's plugin
-harness (contract v18), in synthetic mode, beside a reader (e2e/reader.py).
+harness (contracts v18 and v19), in synthetic mode, beside a reader
+(e2e/reader.py).
 
 1. Launched: the plugin registers its catalogue; the deployment admin's tool
-   lists its two datasets, `daily` and `live`, each on the UTC day ending at
-   00:00, with their modes.
+   lists its three datasets, `daily`, `live` and `trades`, each on the UTC day
+   ending at 00:00, with their modes.
 2. Synthetic mode on: the plugin reads its listing and mints no record for
    any asset (the first build minted one per asset); the venue, which the
    harness's deployment does not hold (it has no platform), reported
    missing. The reader then names bitcoin as a custodian's book holds it,
    by its CAIP-19 and the custodian's symbol, and the dollar and the euro by
    ISO 4217.
-3. Licensed and entitled: the admin licenses both datasets and entitles the
-   reader to them, the broker reloaded with each.
+3. Licensed and entitled: the admin licenses the three datasets and entitles
+   the reader to them, the broker reloaded with each.
 4. A close wanted: the reader reads the custodian's bitcoin's closes for a
    day nothing has recorded; the lake asks the plugin, which reads the
    record (W3.6, a dgm's from contract v18 as ruled 2026-10-10), names it
@@ -19,19 +20,28 @@ harness (contract v18), in synthetic mode, beside a reader (e2e/reader.py).
    XXBTZUSD's close in dollars and XBTUSDC's on USDC's own instrument --
    resolved then, the one record it mints -- exactly as the venue stated
    them, on that business date, each naming its raw record and the venue as
-   reported; the reader reads both, and hears them. No record was minted
-   for an asset no subject is.
+   reported; the reader reads both, and hears them -- following BTC's
+   prices, trades and quotes, whose latest quote stands as a want of the
+   live dataset. No record was minted for an asset no subject is.
 5. Declined, and a rate: a read of the dollar's closes, which no pair's base
    is, is declined as not covered; the euro's, recorded from EUR/USD in
    dollars: an FX rate on a currency's cash instrument.
 6. Live: a read of BTC's latest on the live dataset stands as a want, which
    the plugin keeps current -- the last trade's price and the best bid and
    offer of each product -- until the lake withdraws it.
-7. Parity: the plugin's two read tools answer through the deployment's MCP
-   what its two pages show.
-8. Its raw responses are in its granted storage, and `store lake` prints
-   each row kept, numbered with no holes, the wants asked, answered,
-   declined and withdrawn, and the venue's miss.
+7. Streamed (contract v19): the standing want puts BTC's pairs on Kraken's
+   v2 stream; the synthetic venue drops the first connection, the plugin
+   opens it again and reads the trades it missed from Kraken's `Trades`, so
+   every trade is recorded once in `trades`, its aggressor the side that took
+   liquidity (Kraken's taker side as sent), eligible for every statistic,
+   exactly as stated, with no business date; the reader reads them over the
+   day, and after the watermark it saw, and hears them; and reads each
+   pair's latest quote in `live`, with its sizes.
+8. Parity: the plugin's two read tools answer through the deployment's MCP
+   what its two pages show, the stream's session among them.
+9. Its raw responses are in its granted storage, and `store lake` prints
+   each row kept, numbered with no holes in each dataset, the wants asked,
+   answered, declined and withdrawn, and the venue's miss.
 
 Run from the repository's root by the Makefile, which builds the image,
 copies the harness out and writes the plugins' compose file first, and
@@ -67,6 +77,20 @@ LAST = {"XXBTZUSD": "61988.90000", "XBTUSDC": "62006.75"}
 EUR_CLOSE = "1.0925"
 #: The assets no subject is, for which the first build minted a record each.
 UNASKED = r"(?<![A-Z])(X?ETH|TKN|QDT|PLY)(?![A-Z])"
+#: The day the synthetic stream's trades are on, as a UTC range.
+TRADES_FROM, TRADES_UNTIL = 1791590400 * 10**9, 1791676800 * 10**9
+#: Each trade the synthetic stream and history state, by its row key, with
+#: the side that took liquidity: Kraken's taker side as sent. 110938303 to
+#: 110938306 are read back from `Trades` when the stream opens again.
+TRADES = {"XXBTZUSD:t:110938301": "SELL", "XXBTZUSD:t:110938302": "BUY",
+          "XXBTZUSD:t:110938303": "BUY", "XXBTZUSD:t:110938304": "SELL",
+          "XXBTZUSD:t:110938305": "BUY", "XXBTZUSD:t:110938306": "SELL",
+          "XXBTZUSD:t:110938307": "BUY", "XBTUSDC:t:5502": "SELL", "XBTUSDC:t:5503": "SELL"}
+#: 110938302 exactly as the stream stated it, its JSON numbers read as text.
+STATED = ("XXBTZUSD:t:110938302", "61990.20000", "0.01250000")
+#: Each pair's latest best bid and offer, with their sizes.
+QUOTES = {"XXBTZUSD": ("61991.7", "0.92000000", "61991.8", "0.33000000"),
+          "XBTUSDC": ("62007.10", "0.10000000", "62007.40", "0.25000000")}
 
 
 class Failed(Exception):
@@ -133,11 +157,13 @@ def call(tool, arguments, *outcomes):
     return answer
 
 
-def instrument(listed, pattern):
+def instrument(listed, pattern, required=True):
     for line in listed.splitlines():
         instrument_id, _, identifiers = line.partition("\t")
         if re.search(pattern, identifiers):
             return instrument_id
+    if not required:
+        return ""
     raise Failed(f"no record listed matches {pattern}: {listed}")
 
 
@@ -159,9 +185,10 @@ def run():
     def datasets():
         held = {d["dataset"]: d for d in
                 call("dashboard__list_datasets", {}, "read")["data"]["datasets"]}
-        return held if {f"{VENUE}:daily", f"{VENUE}:live"} <= set(held) else None
-    held = until(90, datasets, "step 1, the two datasets were not listed")
-    for key, modes in (("daily", ["pull", "push"]), ("live", ["pull", "stream"])):
+        return held if {f"{VENUE}:{k}" for k in ("daily", "live", "trades")} <= set(held) else None
+    held = until(90, datasets, "step 1, the three datasets were not listed")
+    for key, modes in (("daily", ["pull", "push"]), ("live", ["pull", "stream"]),
+                       ("trades", ["pull", "stream"])):
         entry = held[f"{VENUE}:{key}"]["catalogue_entry"]
         must(entry["modes"] == modes and entry["day_time_zone"] == "Etc/UTC"
              and entry.get("day_end_minute", 0) == 0, f"step 1, {key}'s entry: {entry}")
@@ -183,7 +210,10 @@ def run():
            "display=true", "personal_use=false", f"note={NAME}'s market data terms.")
     runner("licence", f"{VENUE}:live", "kept=true", "retention_days=2", "display=true",
            "personal_use=false", "note=Kept two days.")
-    for key in ("daily", "live"):
+    runner("licence", f"{VENUE}:trades", "kept=true", "retention_days=2", "display=true",
+           "personal_use=false", "note=Kept two days.")
+    runner("grant", "--instance", "reader", "--level", "read", "--role", "signal")
+    for key in ("daily", "live", "trades"):
         runner("entitle", "--instance", "reader", f"{VENUE}:{key}", "note=The e2e's reader.")
 
     # 4. A close wanted, recorded against the want, read and heard.
@@ -210,7 +240,9 @@ def run():
     dollars = by_product.get(FIAT_PRODUCT) or next(iter(by_product.values()))
     listed = runner("instruments")
     log("instruments, after the want:\n" + listed)
-    usdc = instrument(listed, r"(?<![A-Z])USDC(?![A-Z])")
+    # A recording may hold no product quoted in USDC (Coinbase delisted
+    # BTC-USDC): then nothing names USDC, and nothing is asserted of it.
+    usdc = instrument(listed, r"(?<![A-Z])USDC(?![A-Z])", required=EXACT)
     must(not re.search(UNASKED, listed),
          f"step 4, no record minted for an asset no subject is: {listed}")
     must(dollars["instrument_id"] not in ("", usdc, btc),
@@ -250,30 +282,85 @@ def run():
         must((row["amount"] == stated or not EXACT) and not row["business_date"],
              f"step 6, a last price as stated, keyed by its instant: {row}")
 
-    # 7. Parity: each read tool answers what its page shows.
+    # 7. Streamed: every trade once, the gap read back; the latest quotes.
+    def all_trades():
+        if EXACT:
+            asked = f"/trades?subject={btc}&from={TRADES_FROM}&until={TRADES_UNTIL}"
+        else:
+            asked = f"/trades?subject={btc}&after={VENUE}:trades:0"
+        answer = read(asked)
+        keys = {t["row_key"] for t in answer["trades"]}
+        return answer if (keys >= set(TRADES) if EXACT else keys) else None
+    answer = until(120, all_trades, "step 7, the stream's trades, and the gap, were not recorded")
+    trades = answer["trades"]
+    must(len({t["row_key"] for t in trades}) == len(trades)
+         and all(t["version"] == 1 for t in trades), f"step 7, each trade once: {trades}")
+    for trade in trades:
+        side = TRADES.get(trade["row_key"]) if EXACT else None
+        must(trade["dataset"] == f"{VENUE}:trades" and not trade["business_date"]
+             and trade["aggressor"] in ("AGGRESSOR_BUY", "AGGRESSOR_SELL")
+             and (side is None or trade["aggressor"] == f"AGGRESSOR_{side}")
+             and trade["eligible"] == ["ELIGIBLE_ELIGIBLE"] * 4
+             and trade["venue_id"] == "" and trade["unconverted"] == [f"{VENUE}:venue"],
+             f"step 7, a trade as the venue stated it, its aggressor the taker's side: {trade}")
+        stable = trade["row_key"].startswith(f"{STABLE_PRODUCT}:")
+        quoted = (trade["currency_code"] == "USD" if EXACT
+                  else bool(trade["currency_code"] or trade["instrument_id"]))
+        must(trade["instrument_id"] == usdc if stable else quoted,
+             f"step 7, a trade's price in its product's quote asset: {trade}")
+    if EXACT:
+        [stated] = [t for t in trades if t["row_key"] == STATED[0]]
+        must((stated["amount"], stated["quantity"]) == STATED[1:], f"step 7, exact: {stated}")
+        later = read(f"/trades?subject={btc}&" + "&".join(
+            f"after={p.replace('|', ':')}" for p in answer["watermark"]))
+        must(later["trades"] == [] and answer["watermark"],
+             f"step 7, nothing recorded after the watermark the reader saw: {later}")
+    until(60, lambda: read("/heard")["trades"], "step 7, the reader did not hear the trades")
+
+    def latest_quotes():
+        quotes = {q["row_key"].split(":")[0]: q for q in read(f"/quotes?subject={btc}")["quotes"]}
+        if EXACT:
+            return quotes if all(
+                product in quotes and (quotes[product]["bid"], quotes[product]["bid_quantity"],
+                                       quotes[product]["ask"], quotes[product]["ask_quantity"])
+                == said for product, said in QUOTES.items()) else None
+        return quotes or None
+    quotes = until(90, latest_quotes, "step 7, each product's latest quote was not recorded")
+    must(all(q["dataset"] == f"{VENUE}:live" and not q["business_date"] and (q["bid"] or q["ask"])
+             for q in quotes.values()), f"step 7, quotes in the live dataset: {quotes}")
+    streamed = call(named["read_connection"], {}, "read", "unchanged")["data"]
+    must(streamed["stream_opened"] >= (2 if EXACT else 1)
+         and streamed["stream_dropped"] >= (1 if EXACT else 0) and streamed["stream_messages"] > 0,
+         f"step 7, the stream opened, dropped and opened again: {streamed}")
+
+    # 8. Parity: each read tool answers what its page shows.
     connection = call(named["read_connection"], {}, "read", "unchanged")["data"]
     mode = "synthetic" if EXACT else "recorded"
     must(connection["mode"] == mode and connection["venue"] == NAME
          and connection["venue_held"] is False and connection["calls"] > 0,
-         f"step 7, read_connection: {connection}")
+         f"step 8, read_connection: {connection}")
     shown = page(VENUE, "admin", "/")
     must(f"{mode.capitalize()}: answers from files" in shown and NAME in shown,
-         "step 7, the Connection page shows the same")
+         "step 8, the Connection page shows the same")
     served = call(named["read_datasets"], {}, "read", "unchanged")["data"]
-    must([d["dataset"] for d in served["datasets"]] == [f"{VENUE}:daily", f"{VENUE}:live"]
+    must([d["dataset"] for d in served["datasets"]]
+         == [f"{VENUE}:daily", f"{VENUE}:live", f"{VENUE}:trades"]
          and served["products_mapped"] >= 3 and served["subjects_named"] == 3
          and served["reads_instruments"] is True and served["recorded"] >= 2,
-         f"step 7, read_datasets: {served}")
+         f"step 8, read_datasets: {served}")
     shown = page(VENUE, "admin", "/datasets")
     must(f"{served['products_mapped']} of {served['products_listed']} products mapped" in shown,
-         "step 7, the Datasets page shows the same")
+         "step 8, the Datasets page shows the same")
+    shown = page(VENUE, "admin", "/")
+    must("; opened " in shown or "Off: nothing stands to stream" in shown,
+         "step 8, the Connection page shows the stream's session")
 
-    # 8. Raw responses kept, and the lake's record.
+    # 9. Raw responses kept, and the lake's record.
     kept = compose("exec", "-T", VENUE, "python", "-c",
                    "from meridian import edge; "
                    "print(sum(1 for p in (edge.storage_dir() / 'responses').rglob('*') if p.is_file()))")
-    must(int(kept.stdout.strip() or 0) >= 5, f"step 8, raw responses in storage: {kept.stdout}")
-    names = {btc: "BTC", usdc: "USDC", usd: "USD", eur: "EUR"}
+    must(int(kept.stdout.strip() or 0) >= 5, f"step 9, raw responses in storage: {kept.stdout}")
+    names = {k: v for k, v in {usdc: "USDC", btc: "BTC", usd: "USD", eur: "EUR"}.items() if k}
 
     def lake():
         lines = compose("run", "--rm", "-T", "store", "lake").stdout.split("\n")
@@ -282,38 +369,50 @@ def run():
         withdrawn = any(line.startswith(f"want|{VENUE}:live|withdrawn|") for line in lines)
         declined = any(line.startswith(f"want|{VENUE}:daily|declined|USD|") for line in lines)
         return lines if withdrawn and declined else None
-    lines = until(240, lake, "step 8, the live want was not withdrawn, or the dollar not declined")
+    lines = until(240, lake, "step 9, the live want was not withdrawn, or the dollar not declined")
     log("store lake:\n" + "\n".join(lines))
     rows = [line.split("|") for line in lines if line.startswith(f"row|{VENUE}:daily|")]
     sequences = sorted(int(row[3]) for row in rows)
-    must(sequences == list(range(1, len(sequences) + 1)) and len(sequences) >= 2,
-         f"step 8, daily's rows numbered from 1 with no holes: {sequences}")
+    must(sequences == list(range(1, len(sequences) + 1)) and len(sequences) >= (2 if EXACT else 1),
+         f"step 9, daily's rows numbered from 1 with no holes: {sequences}")
     must({row[6] for row in rows} == {"BTC", "EUR"} and CLOSED in {row[9] for row in rows},
-         f"step 8, each row BTC's or the euro's, each on its business date: {rows}")
+         f"step 9, each row BTC's or the euro's, each on its business date: {rows}")
     must(all(row[8] == "" and row[11] == "true" for row in rows),
-         f"step 8, the venue left empty, a value as reported: {rows}")
-    must(f"want|{VENUE}:daily|asked|BTC|0" in lines, f"step 8, the want asked: {lines}")
+         f"step 9, the venue left empty, a value as reported: {rows}")
+    must(f"want|{VENUE}:daily|asked|BTC|0" in lines, f"step 9, the want asked: {lines}")
     must(any(re.fullmatch(rf"want\|{VENUE}:daily\|answered\|BTC(,BTC)*\|0", line) for line in lines),
-         f"step 8, the want answered, a subject for each row: {lines}")
+         f"step 9, the want answered, a subject for each row: {lines}")
     for product in LAST if EXACT else []:
         for kind in ("last", "bid", "ask"):
             must(any(line.startswith(f"row|{VENUE}:live|price|") and f"|{product}:{kind}:" in line
-                     for line in lines), f"step 8, {product}'s {kind} kept: {lines}")
+                     for line in lines), f"step 9, {product}'s {kind} kept: {lines}")
+    traded = [line.split("|") for line in lines if line.startswith(f"row|{VENUE}:trades|")]
+    sequences = sorted(int(row[3]) for row in traded)
+    must(sequences == list(range(1, len(sequences) + 1))
+         and len(sequences) >= (len(TRADES) if EXACT else 1),
+         f"step 9, trades' rows numbered from 1 with no holes, each once: {sequences}")
+    must({row[6] for row in traded} == {"BTC"}, f"step 9, each trade BTC's: {traded}")
+    must(any(line.startswith(f"row|{VENUE}:live|") and ":q:" in line for line in lines),
+         f"step 9, the quotes kept in the live dataset: {lines}")
     must(any(line.startswith(f"miss|{VENUE}|") for line in lines),
-         f"step 8, the venue's miss counted: {lines}")
+         f"step 9, the venue's miss counted: {lines}")
 
     print(f"e2e OK in {int(time.time() - started)}s: on core's plugin harness, the catalogue's "
-          "daily and live datasets listed by the deployment admin's tool on the UTC day; the "
+          "daily, live and trades datasets listed by the deployment admin's tool on the UTC day; "
+          "the "
           "listing read in synthetic mode with no record minted for any asset, and the venue "
-          "reported missing; both datasets licensed and the reader entitled; a custodian's "
+          "reported missing; the three datasets licensed and the reader entitled; a custodian's "
           "bitcoin, by its CAIP-19 and the custodian's symbol, read and named, and a day's "
           "closes wanted and recorded against the want, XXBTZUSD's in dollars and XBTUSDC's on "
           "USDC's own instrument, exactly, read and heard, no record minted for an asset no "
           "subject is; the dollar declined as not covered and the "
           "euro's rate in dollars recorded; bitcoin's "
-          "live prices kept current until withdrawn; read_connection and read_datasets "
-          "answering what the pages show; raw responses in storage; and `store lake` "
-          "numbering each row with no holes, the wants and the miss")
+          "live prices kept current until withdrawn; bitcoin's pairs streamed, the first "
+          "connection dropped and opened again, the trades it missed read back from Trades, "
+          "every trade recorded once with its aggressor, read over the day and after the "
+          "watermark and heard, and each pair's latest quote with its sizes; read_connection "
+          "and read_datasets answering what the pages show; raw responses in storage; and "
+          "`store lake` numbering each dataset's rows with no holes, the wants and the miss")
 
 
 def main():

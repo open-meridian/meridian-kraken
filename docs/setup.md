@@ -7,11 +7,12 @@ storage for its raw responses, and no key.
 
 ## 2. License its datasets
 
-On the dashboard's **Data sources** page, each of the plugin's two datasets
+On the dashboard's **Data sources** page, each of the plugin's three datasets
 is listed with the terms Kraken's standard terms impose:
 
 - `<instance>:daily`: kept, for one person's use.
 - `<instance>:live`: kept two days, for one person's use.
+- `<instance>:trades`: kept two days, for one person's use.
 
 Kraken asks its permission for any non-personal commercial use; with one
 person's terms, the page warns when more than one person reads a plugin

@@ -9,6 +9,7 @@ recorder answering batches as the lake does (conftest.Lake).
 from __future__ import annotations
 
 from datetime import timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -400,3 +401,165 @@ async def test_a_product_the_venue_refuses_leaves_the_subjects_others_recorded(l
     declined = await dgm.record_days([btc], venue.CLOSED, venue.CLOSED, "meridian.v1.Price")
     assert not declined
     assert {r.meta.row_key.split(":")[0] for r in lake.rows()} == {venue.CLOSED_CLOSE[0]}
+
+
+# ── Trades and quotes (contract v19) ─────────────────────────────────────────
+
+
+async def _streaming(lake: Lake, key: str = "trades", data_type: str = "meridian.v1.Trade") -> Any:
+    """The dgm with a standing want of `key` for BASE, its stream not run yet."""
+    dgm = dgm_on(lake)
+    btc = await lake.held(dgm, venue.BASE)
+    await hear(lake, dgm, wanted(dgm, "WNT-S", key, [btc], data_type=data_type, standing=True))
+    return dgm, btc
+
+
+async def _drive(dgm: Any) -> None:
+    """Each of the synthetic venue's connections in turn, as the stream opens
+    them, each dropping once it has said everything; then what is held sent."""
+    for session in dgm.market.client.transport.stream_sessions():
+
+        async def replayed(_: str, said: list[str] = session) -> Any:
+            return venue.stream.Replayed(said, hold=False)
+
+        dgm.stream.connect = replayed
+        await dgm.stream.run(once=True)
+    await dgm.flush()
+
+
+async def test_a_standing_want_puts_its_subjects_products_on_the_stream_until_withdrawn(
+    lake: Lake,
+) -> None:
+    dgm, _ = await _streaming(lake)
+    assert sorted(dgm.streams) == venue.STREAM_NAMES
+    assert dgm.stream._wanted == tuple(sorted(venue.STREAM_NAMES))
+    lake.answer("WantWithdrawn", lambda _: [ops.WantWithdrawnEvent(want_id="WNT-S")])
+    await lake.receive(want_withdrawn=dgm.on_withdrawn)
+    assert dgm.streams == {} and dgm.stream._wanted == ()
+
+
+async def test_the_stream_records_every_trade_and_reads_back_the_gap_a_drop_leaves(
+    lake: Lake,
+) -> None:
+    dgm, btc = await _streaming(lake)
+    await _drive(dgm)
+    trades = lake.rows("RecordTrades")
+    by_product: dict[str, list[str]] = {}
+    for row in trades:
+        product, kind, ident = row.meta.row_key.split(":")
+        assert kind == "t"
+        by_product.setdefault(product, []).append(ident)
+    assert {p: sorted(ids, key=int) for p, ids in by_product.items()} == venue.STREAMED
+    assert all(len(ids) == len(set(ids)) for ids in by_product.values()), "each trade once"
+    assert dgm.stream.health.opened == 2 and dgm.stream.health.dropped == 2
+    for row in trades:
+        ident = row.meta.row_key.rsplit(":", 1)[1]
+        assert ops.Aggressor.Name(row.aggressor) == venue.AGGRESSORS[ident], ident
+        assert row.meta.source.dataset == f"{venue.VENUE}:trades"
+        assert [s.entity_id for s in row.meta.subjects] == [btc]
+        assert not row.meta.business_date and row.meta.valid_from_ns
+        assert [t.kind for t in row.meta.source_times] == [ops.SOURCE_TIME_KIND_EVENT]
+        assert row.source_sequence == int(ident)
+        yes = ops.ELIGIBLE_ELIGIBLE
+        every = ops.Eligibility(high_low=yes, open=yes, close=yes, volume=yes)
+        assert row.attributes.consolidated == every and row.attributes.market_centre == every
+        assert not row.attributes.characteristics
+        gap = ident in venue.GAP
+        assert ("/trades/" in row.meta.raw.key.lower()) == gap, (ident, row.meta.raw.key)
+        assert ("/stream/" in row.meta.raw.key) != gap, (ident, row.meta.raw.key)
+    (product, ident), (price, quantity) = venue.TRADE_PRICE, venue.TRADE_QUANTITY
+    [stated] = [r for r in trades if r.meta.row_key == f"{product}:t:{ident}"]
+    assert (str(as_decimal(stated.price.amount)), str(as_decimal(stated.quantity))) == (
+        price,
+        quantity,
+    )
+
+
+async def test_the_streams_quotes_are_each_products_latest_with_their_sizes(lake: Lake) -> None:
+    dgm, _ = await _streaming(lake, "live", "meridian.v1.Quote")
+    await _drive(dgm)
+    quotes = lake.rows("RecordQuotes")
+    latest: dict[str, Any] = {}
+    for row in quotes:
+        product, kind, at = row.meta.row_key.split(":")
+        assert kind == "q" and int(at) == row.meta.valid_from_ns
+        assert row.meta.source.dataset == f"{venue.VENUE}:live" and not row.meta.business_date
+        latest[product] = row
+    for params in lake.on("RecordQuotes"):
+        products = [q.meta.row_key.split(":")[0] for q in params.quotes]
+        assert len(products) == len(set(products)), "at most one a product each time sent"
+    for product, (bid, bid_size, ask, ask_size) in venue.LAST_QUOTES.items():
+        row = latest[product]
+        said = (as_decimal(row.bid.amount), as_decimal(row.bid_quantity),
+                as_decimal(row.ask.amount), as_decimal(row.ask_quantity))  # fmt: skip
+        assert said == tuple(Decimal(v) for v in (bid, bid_size, ask, ask_size)), product
+
+
+async def test_a_quote_now_is_read_from_the_book_and_an_empty_side_left_unset(lake: Lake) -> None:
+    dgm = dgm_on(lake)
+    btc = await lake.held(dgm, venue.BASE)
+    one_sided = await lake.held(dgm, venue.ONE_SIDED_BASE)
+    await hear(lake, dgm, wanted(dgm, "WNT-Q", "live", [btc, one_sided],
+                                 data_type="meridian.v1.Quote"))  # fmt: skip
+    quotes = lake.rows("RecordQuotes")
+    assert {r.meta.subjects[0].entity_id for r in quotes} == {btc, one_sided}
+    for row in quotes:
+        if row.meta.subjects[0].entity_id == one_sided:
+            assert row.HasField("bid") and row.HasField("bid_quantity")
+            assert not row.HasField("ask") and not row.HasField("ask_quantity")
+        else:
+            assert row.HasField("ask") and row.HasField("ask_quantity")
+    assert all(params.want_id == "WNT-Q" for params in lake.on("RecordQuotes"))
+    assert dgm.stream._wanted == (), "a quote wanted now puts nothing on the stream"
+
+
+async def test_a_range_of_trades_is_read_from_the_history_and_one_before_it_declined(
+    lake: Lake,
+) -> None:
+    dgm = dgm_on(lake)
+    btc = await lake.held(dgm, venue.BASE)
+    start = venue.NOW_NS - 60 * 1_000_000_000
+    event = wanted(dgm, "WNT-R", "trades", [btc], data_type="meridian.v1.Trade")
+    event.valid_from_ns, event.valid_until_ns = start, venue.NOW_NS
+    await hear(lake, dgm, event)
+    trades = lake.rows("RecordTrades")
+    assert trades and all(start <= r.meta.valid_from_ns < venue.NOW_NS for r in trades)
+    assert all(params.want_id == "WNT-R" for params in lake.on("RecordTrades"))
+    before = wanted(dgm, "WNT-B", "trades", [btc], data_type="meridian.v1.Trade")
+    before.valid_from_ns = venue.NOW_NS - 10 * 86_400 * 1_000_000_000
+    before.valid_until_ns = before.valid_from_ns + 3_600 * 1_000_000_000
+    await hear(lake, dgm, before)
+    [declined] = [d for d in lake.on("DeclineWant") if d.want_id == "WNT-B"]
+    assert declined.reason == ops.UNANSWERED_REASON_BEYOND_HISTORY
+
+
+async def test_a_trade_heard_again_is_not_sent_again(lake: Lake) -> None:
+    dgm, _ = await _streaming(lake)
+    await _drive(dgm)
+    sent = len(lake.rows("RecordTrades"))
+    await _drive(dgm)
+    assert len(lake.rows("RecordTrades")) == sent
+
+
+async def test_a_trade_or_quote_the_dataset_does_not_hold_is_not_covered(lake: Lake) -> None:
+    dgm = dgm_on(lake)
+    btc = await lake.held(dgm, venue.BASE)
+    for want_id, key, data_type in (("WNT-1", "daily", "meridian.v1.Trade"),
+                                    ("WNT-2", "trades", "meridian.v1.Quote"),
+                                    ("WNT-3", "daily", "meridian.v1.Quote")):  # fmt: skip
+        await hear(lake, dgm, wanted(dgm, want_id, key, [btc], data_type=data_type))
+    declined = {d.want_id: d.reason for d in lake.on("DeclineWant")}
+    assert declined == dict.fromkeys(("WNT-1", "WNT-2", "WNT-3"),
+                                     ops.UNANSWERED_REASON_NOT_COVERED)  # fmt: skip
+
+
+async def test_a_batch_the_lake_refuses_is_said_and_the_stream_goes_on(lake: Lake) -> None:
+    dgm, _ = await _streaming(lake)
+
+    def refused(_: Any) -> Any:
+        raise meridian.MeridianError("refused: trades[0].quantity")
+
+    lake.answer("RecordTrades", refused)
+    await _drive(dgm)
+    assert dgm.stream.health.opened == 2, "both connections opened, the refusal said"
+    assert dgm.pending_trades == [], "a refused batch is not sent again and again"

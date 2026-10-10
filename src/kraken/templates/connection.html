@@ -3,6 +3,11 @@
 <tr><th scope="row">{{ label }}</th><td title="{{ value }}">{% if mono %}<code>{{ value }}</code>{% else %}{{ value }}{% endif %}</td>
 <td class="more"><details class="row-detail" name="connection"><summary aria-label="{{ label }} in full">…</summary><div class="row-detail-pop"><h3>{{ label }}</h3><p>{{ value }}</p></div></details></td></tr>
 {% endmacro %}
+{% macro stream_said(data) -%}
+{%- if data.stream_state == "off" -%}Off: nothing stands to stream
+{%- else -%}{{ data.stream_state|capitalize }}: {{ data.streaming }} {{ "product" if data.streaming == 1 else "products" }}; opened {{ data.stream_opened }}, dropped {{ data.stream_dropped }}; {{ data.stream_messages }} messages{% if data.last_message_at %}, the last at {{ data.last_message_at.strftime("%H:%M:%S UTC") }}{% endif %}{% if data.stream_error %}; last: {{ data.stream_error }}{% endif %}
+{%- endif -%}
+{%- endmacro %}
 {% block status %}
 {% if data.mode == "starting" %}
 <om-status data-om-header state="warn" label="Starting">Starting.</om-status>
@@ -28,6 +33,7 @@
 {{ fact("This plugin spends", data.spent) }}
 {{ fact("Calls", data.calls ~ " since it started; " ~ data.rate_limited ~ " rate-limited, " ~ data.failures ~ " failed") }}
 {{ fact("Last answer", data.last_answer_at.strftime("%Y-%m-%d %H:%M:%S UTC") if data.last_answer_at else "None yet") }}
+{{ fact("Stream", stream_said(data)) }}
 {{ fact("Last error", data.last_error or "None") }}
 </tbody>
 </table>

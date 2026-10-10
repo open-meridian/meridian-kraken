@@ -9,6 +9,9 @@ converted from it names it by a `RawRecordRef` whose key is the record's
 path in the plugin's storage, then `#` and where in it the row came from
 (`#1791417600`, a candle's start; `#41`, a line of a day's live responses),
 so a person auditing a row follows it here and finds what the venue said.
+From contract v19 the stream's messages are kept the same way (stream.py):
+each a line of one file per day and message type, under `stream/`, before
+anything is read from it; a heartbeat, which states nothing, is not kept.
 
 The plugin declares one kind of raw record, `responses` (declaration.py),
 kept in units of a UTC day: `responses/2026-10-09/`, holding that day's
@@ -86,6 +89,8 @@ class RawStore:
         self.root = root
         self._kept = 0
         self._last: dict[str, str] = {}
+        #: The lines each day's file holds, counted once: a stream adds many.
+        self._lines: dict[str, int] = {}
 
     def _day(self, received_ns: int) -> str:
         return utc_day(received_ns // NANOS_PER_SECOND).isoformat()
@@ -115,9 +120,12 @@ class RawStore:
             return held.split("\0", 1)[1]
         path = self.root / key
         path.parent.mkdir(parents=True, exist_ok=True)
-        lines = sum(1 for _ in path.open(encoding="utf-8")) if path.exists() else 0
+        lines = self._lines.get(key)
+        if lines is None:
+            lines = sum(1 for _ in path.open(encoding="utf-8")) if path.exists() else 0
         with path.open("a", encoding="utf-8") as out:
             out.write(json.dumps(record, sort_keys=True) + "\n")
+        self._lines[key] = lines + 1
         named = f"{key}#{lines}"
         self._last[key] = body + "\0" + named
         return named

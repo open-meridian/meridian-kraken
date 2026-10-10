@@ -1,4 +1,4 @@
-"""What this version declares beside its role (W8.1, W4.1; contract v18).
+"""What this version declares beside its role (W8.1, W4.1; contracts v18 and v19).
 
 **Its catalogue** (spec/the-lake, "The catalogue"; the plan's Q5 and Q21),
 declared from code and read the same way at registration and by `meridian
@@ -8,9 +8,15 @@ plugin upload`:
   00:00 UTC (`day_time_zone` `Etc/UTC`, `day_end_minute` 0, as the plan
   rules for a venue with no official close), pulled for what the lake
   wants and pushed for a standing want; kept.
-- `live`: the last trade's price and the best bid and offer, at most once a
-  second per subject and kind, pulled for the latest or kept current for a
-  standing want; kept two days.
+- `live`: the last trade's price and the best bid and offer as prices, at
+  most once a second per subject and kind, pulled for the latest or kept
+  current for a standing want; and from contract v19 the best bid and offer
+  with their sizes as a quote, kept current from the venue's stream while a
+  standing want stands; kept two days.
+- `trades` (contract v19): every trade, from the venue's stream for the
+  subjects under a standing want, or from its REST history for a range
+  wanted; declared apart from the live prices, so an admin licenses and
+  keeps them apart (the plan's Q40), kept two days.
 
 Each licence is what Kraken's standard terms say, which the deployment's
 licence confirms or replaces, never whether a deployment meets them: Kraken
@@ -74,7 +80,20 @@ CATALOGUE = [
     DatasetDeclaration(
         key="live",
         vendor=VENDOR,
-        data_types=["meridian.v1.Price"],
+        data_types=["meridian.v1.Price", "meridian.v1.Quote"],
+        modes=["pull", "stream"],
+        cadence=1,
+        history=0,
+        licence_default=DatasetLicence(
+            kept=True, retention_days=2, display=True, personal_use=True
+        ),
+        day_time_zone="Etc/UTC",
+        day_end_minute=0,
+    ),
+    DatasetDeclaration(
+        key="trades",
+        vendor=VENDOR,
+        data_types=["meridian.v1.Trade"],
         modes=["pull", "stream"],
         cadence=1,
         history=0,

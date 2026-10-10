@@ -2,29 +2,34 @@
 
 A Meridian plugin, in Python on the open-meridian SDK, that puts Kraken's
 public market data into a deployment's lake, its codes converted
-at the edge: a `dgm` (W10, contract v18). It runs beside a sidecar in a
+at the edge: a `dgm` (W10, contracts v18 and v19). It runs beside a sidecar in a
 Meridian deployment and reaches nothing else but that sidecar and Kraken's
-public REST (no key): what it may publish and subscribe to comes
+public REST and v2 WebSocket (no key): what it may publish and subscribe to comes
 from the role `pyproject.toml` declares under `[tool.meridian]` (`dgm`), once
 a deployment admin approves it.
 
 - `src/kraken/__main__.py` connects to the sidecar declaring the catalogue,
   the storage and the settings (`declaration.py`) and the pages (`page.py`),
   serves them, hears what the lake wants (`plugin.receive(observations_wanted=...,
-  want_withdrawn=...)`) and keeps each standing want current.
+  want_withdrawn=...)`) and keeps each standing want current, and keeps the
+  venue's stream open while a standing want puts anything on it
+  (`dgm.keep_streaming`).
 - **Kraken's vocabulary is read in one place.** `venue.py` is the HTTP
   client (the standard library's: no third-party dependency), every answer
   kept as a raw record before anything is read from it (`raw.py`), an answer
   good only with an empty `error` list (Kraken refuses under HTTP 200);
   `convert.py` reads Kraken's answers into the venue's values (`market.py`):
   its legacy asset codes (`XXBT`, `ZUSD`) with the one global identifier its
-  documentation supports, daily OHLC, the ticker and the level-1 book, every
+  documentation supports, daily OHLC, the ticker, the level-1 book, trades
+  and the v2 stream's messages, every
   figure a `Decimal` from Kraken's text (`json_decimal`, never `float`).
   `synthetic.py` answers instead of Kraken in synthetic mode: the synthetic
   exchanges in `src/kraken/synthetic/`, or a developer's recorded ones.
 - **Everything from there to the lake is shared with meridian-coinbase, byte
-  for byte**: `market.py`, `dgm.py`, `products.py`, `raw.py`, and the tests
-  `test_suite.py`, `test_dgm.py`, `test_page.py` and `conftest.py`
+  for byte**: `market.py`, `dgm.py`, `products.py`, `raw.py`, `stream.py`
+  (the WebSocket, spoken with the standard library, and its reopening), and
+  the tests `test_suite.py`, `test_dgm.py`, `test_page.py`, `test_raw.py`,
+  `test_stream.py` and `conftest.py`
   (`make suite-same` holds them to the sibling's). Change one, change both,
   in the same session; what differs between the venues belongs in
   `convert.py`, `venue.py`, `synthetic.py`, `declaration.py`, `page.py`'s
@@ -54,6 +59,24 @@ a deployment admin approves it.
   `published` time. Wants are recorded against (`want_id=`) or declined per
   subject with the reason (`not_covered`, `beyond_history`,
   `source_silent`).
+- **Trades and quotes, streamed** (contract v19; the SDK carries typed
+  operations only, so the stream is the plugin's). A standing want of the
+  live or the trades dataset puts its subjects' products on the venue's
+  stream (`dgm.restream`); `convert.py` says what to subscribe and reads each
+  message, kept as a raw record first, into `market.Print` (a trade, with
+  the venue's side and whose side it is -- its `side` is the taker's, recorded as the aggressor as sent) and `market.Top` (the best
+  bid and offer with sizes). The dgm records every trade in `trades`
+  (`plugin.record_trades`, never conflated) and each product's latest quote
+  in `live` (`plugin.record_quotes`, at most once a second), in batches of at
+  most 500, only for subjects under a standing want; a crypto trade is
+  regular, eligible in both views with no characteristic; keyed
+  `<product>:t:<trade ID>` and `<product>:q:<ns>`, no business date; a side
+  with no order unset, never zero. Each time the stream opens again, the
+  trades since the last one recorded are read back from the venue's REST
+  history (`market.trades`), so a drop leaves no gap; a trade heard twice is
+  sent once. A case of the SDK's suite about something the venue never
+  states (condition codes, a withdrawal) is named in
+  `tests/venue_cases.NOT_PRESENTED` with why, never faked.
 - **A `dgm` shows no market data** (ruled 2026-10-03). Its pages, Connection
   and Datasets, are under Manage alone and show its connection, its
   datasets, the product map and the wants it heard: never a price, bar or
@@ -61,8 +84,8 @@ a deployment admin approves it.
   the record it renders (`answers=`), so each is a read tool on the
   deployment's MCP surface, `read_connection` and `read_datasets`, answering
   what the page shows; keep the two in step. Both fit one screen at
-  1440x900 and 390x844 (one-line rows, `om-pager` for the wants, a search
-  above them: a list whose rows grow gets one).
+  1440x900 and 390x844 (one-line rows, `om-pager search` for the wants: a
+  list whose rows grow gets the kit's search, kit 0.11.0).
 - **No real response is committed.** Kraken asks its prior permission for any
   non-personal commercial use of its public data, so `tests/` and
   `src/kraken/synthetic/` hold synthetic exchanges, shaped exactly as Kraken

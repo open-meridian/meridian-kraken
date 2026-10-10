@@ -1,8 +1,10 @@
 """Kraken's public market data: the one module that speaks to it.
 
 REST at api.kraken.com/0/public/: `AssetPairs`, `Assets`, `OHLC` (daily, the
-720 most recent entries at most), `Ticker` and `Depth` (the level-1 book). No
-key: nothing here holds a credential, and nothing is sent but the request.
+720 most recent entries at most), `Ticker`, `Depth` (the level-1 book) and
+`Trades`; and from contract v19 the stream at ws.kraken.com/v2 (`STREAM`; the
+socket is stream.py's, what is said on it convert.py's). No key: nothing
+here holds a credential, and nothing is sent but the request.
 The standard library's HTTP client; the plugin depends on nothing but the
 SDK.
 
@@ -41,6 +43,7 @@ from .market import Health, json_decimal
 from .raw import RawStore
 
 REST = "https://api.kraken.com/0/public"
+STREAM = "wss://ws.kraken.com/v2"
 USER_AGENT = "meridian-kraken (+https://open-meridian.dev)"
 
 #: About one call a second stays inside Kraken's public allowance.
@@ -48,6 +51,8 @@ RATE_PER_SECOND = 1.0
 BURST = 1
 #: Kraken's most daily OHLC entries: the 720 most recent.
 MOST_CANDLES = 720
+#: Kraken's most trades in one request, oldest first from `since`.
+MOST_TRADES = 1000
 RATE_LIMITED = ("EGeneral:Too many requests", "EAPI:Rate limit exceeded")
 #: The headers kept with a record: freshness and rate limits.
 KEPT_HEADERS = ("date", "cache-control", "age", "cf-cache-status", "retry-after")
@@ -211,6 +216,15 @@ class Kraken:
 
     def ticker(self, pair: str) -> Fetched:
         return self._get("Ticker", pair, {"pair": pair}, live=True)
+
+    def trades(self, pair: str, since_ns: int = 0) -> Fetched:
+        """The pair's trades from `since_ns` (UTC nanoseconds), oldest first, at
+        most 1,000; the latest 1,000 where it is 0. `last` says where the next
+        page starts."""
+        params = {"pair": pair, "count": str(MOST_TRADES)}
+        if since_ns:
+            params["since"] = str(since_ns)
+        return self._get("Trades", pair, params)
 
     def depth(self, pair: str) -> Fetched:
         """The best bid and ask, each with its volume and time (level 1)."""

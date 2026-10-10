@@ -4,7 +4,8 @@ The same file in meridian-coinbase and meridian-kraken (`make suite-same`).
 Asked in-process as the sidecar would ask them (`meridian.testing`), after
 the plugin has answered wants on its synthetic exchange: each page is served
 under Manage alone, shows no price, fits its rows on one line each, and its
-tool answers what the page shows.
+tool answers what the page shows; the wants, which grow, carry the kit's
+search (kit 0.11.0); and Connection says how the stream has gone.
 """
 
 from __future__ import annotations
@@ -30,6 +31,15 @@ async def worked() -> tuple[Any, Lake]:
     for want_id, dataset, standing in (("WNT-1", "daily", False), ("WNT-2", "live", True)):
         day = None if standing else venue.CLOSED
         await hear(lake, dgm, wanted(dgm, want_id, dataset, [btc], day=day, standing=standing))
+    # The stream's first connection, as the synthetic venue answers it: it
+    # opens, says its messages and drops.
+    first = dgm.market.client.transport.stream_sessions()[0]
+
+    async def replayed(_: str) -> Any:
+        return venue.stream.Replayed(first, hold=False)
+
+    dgm.stream.connect = replayed
+    await dgm.stream.run(once=True)
     venue.page.hold(dgm)
     return dgm, lake
 
@@ -78,11 +88,20 @@ def test_the_tools_answer_what_the_pages_show(worked: tuple[Any, Lake]) -> None:
     assert data["calls"] > 0 and data["healthy"] is True
     page = client.get("/", "admin").text
     assert dgm.venue.venue_id in page and data["allowed"] in page.replace("&#39;", "'")
+    assert (data["stream_state"], data["streaming"], data["stream_opened"],
+            data["stream_dropped"]) == ("waiting", len(venue.STREAM_NAMES), 1, 1)  # fmt: skip
+    assert data["stream_messages"] > 0 and data["last_message_at"]
+    assert (
+        f"Waiting: {data['streaming']} products; opened 1, dropped 1; "
+        f"{data['stream_messages']} messages" in page
+    )
+    assert "WebSocket" in [e["name"] for e in data["endpoints"]]
 
     datasets = client.call_tool("read_datasets", level="admin").data
     assert [d["dataset"] for d in datasets["datasets"]] == [
         f"{venue.VENUE}:daily",
         f"{venue.VENUE}:live",
+        f"{venue.VENUE}:trades",
     ]
     assert all(d["day"] == "Etc/UTC, ends 00:00" for d in datasets["datasets"])
     assert datasets["standing_wants"] == 1
@@ -99,14 +118,12 @@ def test_the_tools_answer_what_the_pages_show(worked: tuple[Any, Lake]) -> None:
     assert "Kept current" in shown
 
 
-def test_the_wants_are_searched(worked: tuple[Any, Lake]) -> None:
+def test_the_wants_carry_the_kits_search_beside_its_pager(worked: tuple[Any, Lake]) -> None:
     client = PageClient(venue.page.pages)
-    text = client.get("/datasets", "admin", q="kept current").text
-    assert 'type="search"' in text and "WNT-2" in text and "WNT-1" not in text
-    assert "1 of 2" in text
-    both = client.get("/datasets", "admin", q=f"{venue.VENUE}:").text
-    assert "WNT-1" in both and "WNT-2" in both and "2 of 2" in both
-    assert "No want matches" in client.get("/datasets", "admin", q="nothing-like-it").text
+    text = client.get("/datasets", "admin").text
+    pager = re.findall(r"<om-pager[^>]*>", text)
+    assert pager == ['<om-pager search="Search wants">'], pager
+    assert "WNT-1" in text and "WNT-2" in text, "every want is drawn; the kit narrows them"
     assert len(client.call_tool("read_datasets", level="admin").data["wants"]) == 2
 
 

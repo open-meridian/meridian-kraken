@@ -2,17 +2,22 @@
 
 The same file in meridian-coinbase and meridian-kraken (`make suite-same`
 holds the two copies to each other): the plan's "one suite unchanged between
-the two". Each of the suite's cases (meridian.suites, contract v18) is mapped
-to the plugin's own synthetic exchange for it, named in tests/venue_cases.py,
-the one module that knows which venue this is; the plugin's real client,
-raw records, conversion and dgm run against the SDK's `Recorder`, its typed
-operations recorded rather than sent, and the runner compares what it sent
-with the case. The outcome is tested, never the route.
+the two". Each of the suite's cases (meridian.suites, contracts v18 and v19)
+is mapped to the plugin's own synthetic exchange for it, named in
+tests/venue_cases.py, the one module that knows which venue this is; the
+plugin's real client, raw records, conversion, stream and dgm run against the
+SDK's `Recorder`, its typed operations recorded rather than sent, and the
+runner compares what it sent with the case. The outcome is tested, never the
+route. A case about trades or quotes is presented by the venue's own stream
+message for it, replayed through the plugin's stream (stream.py), or by its
+level-1 book.
 
-A case the venue does not present -- Coinbase Exchange lists no product
-between two currencies, so it states no FX rate -- has no producer, and the
-suite says so: the one failure this file allows, named with why, and none
-other (README, "What it cannot serve").
+A case about something the venue never states -- an FX rate where it lists
+no product between two currencies, a trade's condition codes, a withdrawn
+trade, the resting order's side where it names the taker's -- is named in
+venue_cases.NOT_PRESENTED with why, and the runner holds it to being a case
+about a kind of data (`about`, contract v19); every other case is mapped
+(README, "What it cannot serve").
 """
 
 from __future__ import annotations
@@ -24,7 +29,7 @@ from typing import Any
 
 import meridian
 from meridian.plugin.v1 import operations_pb2 as ops
-from meridian.suites import Recorder, names, run
+from meridian.suites import Recorder, names, run, suite
 
 import venue_cases as venue
 from conftest import BITCOIN, OTHER, Instruments, held
@@ -32,7 +37,7 @@ from conftest import BITCOIN, OTHER, Instruments, held
 Producer = Callable[[Recorder], Awaitable[None]]
 
 #: Why a case has no producer, where this venue's source never presents it.
-NOT_PRESENTED = {"an-fx-rate": "no product between two currencies"} if not venue.FX_BASE else {}
+NOT_PRESENTED: dict[str, str] = venue.NOT_PRESENTED
 
 
 def _dgm(
@@ -133,6 +138,38 @@ def producers(**mutations: Any) -> dict[str, Producer]:
         await recorder.receive(want_withdrawn=dgm.on_withdrawn)
         await dgm.current(daily=True)  # one pass keeping current: nothing stands now
 
+    def streamed(message: str, key: str, data_type: str) -> Producer:
+        # A standing want of a streamed dataset for BASE, then the venue's
+        # stream stating the case's message, replayed through the plugin's
+        # stream, which drops once it is said.
+        async def produce(recorder: Recorder) -> None:
+            dgm, store = _dgm(recorder)
+            for name, mutated in mutations.items():
+                setattr(dgm, name, mutated.__get__(dgm))
+            subject = await held(store, dgm, venue.BASE)
+            want = ops.ObservationsWantedEvent(
+                want_id="WNT-S", dataset=dgm.dataset(key), data_type=data_type,
+                subjects=[ops.SubjectRef(entity_id=subject)], standing=True,
+            )  # fmt: skip
+            recorder.answer("ObservationsWanted", lambda _: want)
+            await recorder.receive(observations_wanted=dgm.on_want)
+
+            async def replayed(_: str) -> Any:
+                return venue.stream.Replayed([message], hold=False)
+
+            dgm.stream.connect = replayed
+            await dgm.stream.run(once=True)
+            await dgm.flush()
+
+        return produce
+
+    async def one_sided(recorder: Recorder) -> None:
+        dgm, store = _dgm(recorder)
+        for name, mutated in mutations.items():
+            setattr(dgm, name, mutated.__get__(dgm))
+        subject = await held(store, dgm, venue.ONE_SIDED_BASE)
+        await dgm.record_quotes([subject])
+
     made: dict[str, Producer] = {
         "a-daily-close": daily(venue.BASE, "meridian.v1.Price"),
         "the-forming-day-restated": forming,
@@ -149,20 +186,23 @@ def producers(**mutations: Any) -> dict[str, Producer]:
     }
     if venue.FX_BASE:
         made["an-fx-rate"] = daily(venue.FX_BASE, "meridian.v1.Price")
-    return made
+    trades, quotes = (("trades", "meridian.v1.Trade"), ("live", "meridian.v1.Quote"))
+    for case, message in venue.STREAM_CASES.items():
+        made[case] = streamed(message, *(quotes if case == "a-quote-recorded" else trades))
+    made["a-one-sided-quote"] = one_sided
+    return {case: produce for case, produce in made.items() if case not in NOT_PRESENTED}
 
 
-def test_the_suite_has_the_thirteen_cases_this_file_maps() -> None:
+def test_the_suite_has_the_twenty_one_cases_this_file_maps() -> None:
+    assert len(list(names("dgm"))) == 21
     assert set(names("dgm")) == set(producers()) | set(NOT_PRESENTED)
+    assert not set(producers()) & set(NOT_PRESENTED)
 
 
 def test_every_case_the_venue_presents_passes_unchanged() -> None:
-    report = run("dgm", producers(), instance_id=venue.VENUE)
-    failures = dict(report.failures)
-    for case, why in NOT_PRESENTED.items():
-        assert failures.pop(case) == "no producer: the plugin does not map this case", why
-    assert not failures, failures
-    assert len(report.passed_cases) == 13 - len(NOT_PRESENTED)
+    report = run("dgm", producers(), not_presented=NOT_PRESENTED, instance_id=venue.VENUE)
+    assert report.passed, report.failures
+    assert len(report.passed_cases) == 21 - len(NOT_PRESENTED)
 
 
 def test_a_candle_read_through_a_float_fails_the_suite() -> None:
@@ -188,4 +228,38 @@ def test_a_stablecoin_price_as_its_currency_fails_the_suite() -> None:
 
 def test_a_case_not_presented_is_said_with_why() -> None:
     assert all(why.strip() for why in NOT_PRESENTED.values())
-    assert set(NOT_PRESENTED) <= {"an-fx-rate"}, "only a case the venue cannot present"
+    about = {case.name: case.about for case in suite("dgm").cases}
+    assert all(about[case] for case in NOT_PRESENTED), "only a case about a kind of data"
+    assert set(NOT_PRESENTED) <= {
+        "an-fx-rate", "a-condition-converted", "a-condition-not-converted",
+        "a-trade-withdrawn", "the-makers-side-inverted",
+    }, "only a case the venue cannot present"  # fmt: skip
+
+
+def test_the_side_passed_through_fails_the_suite_where_it_is_the_makers() -> None:
+    report = run("dgm", producers(aggressor=lambda self, seen: seen.side),
+                 not_presented=NOT_PRESENTED, instance_id=venue.VENUE)  # fmt: skip
+    assert ("a-trade-recorded" in report.failures) == (venue.SIDE_OF == "maker")
+
+
+def test_the_side_read_the_other_way_fails_the_suite() -> None:
+    def other_way(self: Any, seen: Any) -> str:
+        said = type(self).aggressor(self, seen)
+        return {"buy": "sell", "sell": "buy"}.get(said, "")
+
+    report = run("dgm", producers(aggressor=other_way), not_presented=NOT_PRESENTED,
+                 instance_id=venue.VENUE)  # fmt: skip
+    assert "a-trade-recorded" in report.failures
+
+
+def test_an_empty_side_recorded_as_zero_fails_the_suite() -> None:
+    def zero(self: Any, mapped: Any, best: Any) -> Any:
+        from dataclasses import replace
+        from decimal import Decimal
+
+        filled = replace(best, ask=best.ask if best.ask is not None else Decimal(0))
+        return type(self).quote(self, mapped, filled)
+
+    report = run("dgm", producers(quote=zero), not_presented=NOT_PRESENTED,
+                 instance_id=venue.VENUE)  # fmt: skip
+    assert "a-one-sided-quote" in report.failures

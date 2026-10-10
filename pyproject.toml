@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kraken"
-version = "0.1.0"
+version = "0.2.0"
 description = "Kraken's public market data in an Open Meridian deployment's lake: a dgm"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
@@ -13,7 +13,7 @@ requires-python = ">=3.11"
 # another. The Dockerfile's base is the same version. Kraken is reached with
 # the standard library's HTTP client, so there is no third-party dependency.
 dependencies = [
-  "open-meridian==0.22.0",
+  "open-meridian==0.23.0",
 ]
 
 [project.optional-dependencies]
@@ -33,7 +33,7 @@ where = ["src"]
 # The pages' templates and the synthetic exchanges, installed beside the code
 # that reads them.
 [tool.setuptools.package-data]
-kraken = ["templates/*.html", "synthetic/*.json"]
+kraken = ["templates/*.html", "synthetic/*.json", "synthetic/*.jsonl"]
 
 # What this plugin says about itself, which `meridian plugin upload` sends and
 # a deployment admin approves before it runs (W8). Declarations, not grants.
@@ -42,7 +42,7 @@ kraken = ["templates/*.html", "synthetic/*.json"]
 # match, oms, operations, portfolio, reporting, servicing, settlement, signal
 # -- and its grants are theirs. `dgm`: it puts Kraken's market data into the
 # lake, its codes converted at the edge, and keeps Kraken's raw responses in
-# its own storage (W10, contract v18).
+# its own storage (W10, contracts v18 and v19).
 roles = ["dgm"]
 # Whether it serves a page through its sidecar.
 interface = true

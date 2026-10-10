@@ -19,16 +19,16 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from kraken import page, raw, synthetic
+from kraken import page, raw, stream, synthetic
 from kraken.convert import KrakenMarket
 from kraken.dgm import Dgm, Standing
-from kraken.market import Market
+from kraken.market import TAKER, Market
 from kraken.products import ProductMap
 from kraken.raw import RawStore
 from kraken.synthetic import Synthetic
 from kraken.venue import Kraken, RateLimiter
 
-__all__ = ["Dgm", "ProductMap", "Standing", "market", "page", "raw", "synthetic"]
+__all__ = ["Dgm", "ProductMap", "Standing", "market", "page", "raw", "stream", "synthetic"]
 
 SYNTHETIC = Path(__file__).parent.parent / "src" / "kraken" / "synthetic"
 
@@ -71,8 +71,8 @@ def market(now_ns: int = NOW_NS, forming: int | None = None) -> Market:
     directory = SYNTHETIC
     if forming is not None:
         held = Path(tempfile.mkdtemp(prefix="kraken-synthetic-"))
-        for name in ("pairs", "assets", "ticker", "depth"):
-            (held / f"{name}.json").write_text((SYNTHETIC / f"{name}.json").read_text())
+        for kept in SYNTHETIC.iterdir():
+            (held / kept.name).write_text(kept.read_text())
         entries: dict[str, Any] = json.loads((SYNTHETIC / "ohlc.json").read_text())
         entries = copy.deepcopy(entries)
         entries[FORMING_PRODUCT].append(FORMING[forming])
@@ -99,3 +99,61 @@ DELISTED = "OLDUSD"
 CLOSED_CLOSE = ("XXBTZUSD", "62001.40000")
 #: The close EXACT_BASE states for CLOSED, as its text.
 EXACT_CLOSE = "0.000012345678901234"
+
+# ── Trades and quotes (contract v19) ─────────────────────────────────────────
+
+#: Whose side Kraken names on a trade: the one that took liquidity.
+SIDE_OF = TAKER
+#: BASE's pairs on the v2 stream, by their names on it (XBT is BTC there).
+STREAM_NAMES = ["BTC/USD", "BTC/USDC"]
+#: Every trade the synthetic stream and history state for BASE's pairs, by
+#: pair, in order: the first connection drops after 110938302, so on reopening
+#: 110938303 to 110938306 are read back from `Trades`, and the second
+#: connection's snapshot of 110938304 to 110938306 is heard again and not
+#: sent again.
+STREAMED = {
+    "XXBTZUSD": ["110938301", "110938302", "110938303", "110938304", "110938305",
+                 "110938306", "110938307"],
+    "XBTUSDC": ["5502", "5503"],
+}  # fmt: skip
+GAP = {"110938303", "110938304", "110938305", "110938306"}
+#: The side that took liquidity, by trade: Kraken's taker side as sent.
+AGGRESSORS = {"110938301": "AGGRESSOR_SELL", "110938302": "AGGRESSOR_BUY",
+              "110938303": "AGGRESSOR_BUY", "110938304": "AGGRESSOR_SELL",
+              "110938305": "AGGRESSOR_BUY", "110938306": "AGGRESSOR_SELL",
+              "110938307": "AGGRESSOR_BUY", "5502": "AGGRESSOR_SELL",
+              "5503": "AGGRESSOR_SELL"}  # fmt: skip
+#: 110938302 as the stream states it, its JSON numbers read from their text.
+TRADE_PRICE, TRADE_QUANTITY = ("XXBTZUSD", "110938302"), ("61990.20000", "0.01250000")
+#: The last best bid and offer each pair's stream states: bid, its size, ask,
+#: its size.
+LAST_QUOTES = {"XXBTZUSD": ("61991.7", "0.92000000", "61991.8", "0.33000000"),
+               "XBTUSDC": ("62007.10", "0.10000000", "62007.40", "0.25000000")}  # fmt: skip
+#: A base whose level-1 book has bids and no offer: TKNUSD's.
+ONE_SIDED_BASE = "TKN"
+#: A trade on BASE's dollar pair taken by a buy, as the v2 stream states it.
+TAKER_BUY = (
+    '{"channel":"trade","type":"update","data":[{"symbol":"BTC/USD","side":"buy",'
+    '"price":62510.01,"qty":0.0125,"ord_type":"market","trade_id":110939001,'
+    '"timestamp":"2026-10-10T11:59:58.123456Z"}]}'
+)
+#: The v2 stream's ticker for BASE's dollar pair: both sides, with sizes.
+TICKER = (
+    '{"channel":"ticker","type":"update","data":[{"symbol":"BTC/USD","bid":62510.0,'
+    '"bid_qty":0.84000000,"ask":62510.1,"ask_qty":0.50000000,"last":62510.01,'
+    '"volume":100.5,"vwap":62400.0,"low":61900.0,"high":62600.0,"change":40.1,'
+    '"change_pct":0.06,"trades":1234,"timestamp":"2026-10-10T11:59:58.500000Z"}]}'
+)
+#: Each case of the suite about trades or quotes, the stream's message that
+#: presents it.
+STREAM_CASES = {"a-trade-recorded": TAKER_BUY, "a-standing-want-streamed": TAKER_BUY,
+                "a-quote-recorded": TICKER}  # fmt: skip
+#: Why each case Kraken never presents is not (meridian.suites: a case about a
+#: kind of data, `about`, the plugin never publishes).
+NOT_PRESENTED = {
+    "the-makers-side-inverted": "Kraken names the side that took liquidity, never the resting "
+    "order's",
+    "a-condition-converted": "Kraken states no condition codes: a crypto trade is regular",
+    "a-condition-not-converted": "Kraken states no condition codes: none to leave unconverted",
+    "a-trade-withdrawn": "Kraken's feed never withdraws a trade it has stated",
+}

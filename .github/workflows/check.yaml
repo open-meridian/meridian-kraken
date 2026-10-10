@@ -6,10 +6,6 @@
 # The job is named for the make target that runs it locally: `make check`,
 # part of ci-local and so of the pre-push hook, takes the same steps in
 # python:3.12-slim with the same meridian.
-#
-# Red until open-meridian 0.22.0 (contract v18) is on PyPI: the plugin pins
-# it, and `pip install` finds no such release yet. Locally `make check`
-# builds it from the sibling meridian-python checkout.
 name: check
 
 on:

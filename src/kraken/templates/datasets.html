@@ -22,17 +22,13 @@
 <div class="panel-body">
 <h2>Wants</h2>
 <p class="muted">What the lake asked: {{ data.recorded }} rows recorded, {{ data.restated }} restated, {{ data.unchanged }} unchanged; {{ data.declined }} subjects declined{% if data.not_read %}; {{ data.not_read }} values that did not read, left unrecorded{% endif %}.</p>
-{% if data.wants %}<form class="filters" method="get" role="search">
-<input type="search" name="q" value="{{ query }}" placeholder="Search wants" aria-label="Search wants by ID, dataset, what was asked or state">
-<button>Search</button>{% if query %} <a href="?">Clear</a>{% endif %}
-<span class="muted">{{ shown | length }} of {{ data.wants | length }}</span></form>{% endif %}
 </div>
-{% if shown %}
-<om-pager>
+{% if data.wants %}
+<om-pager search="Search wants">
 <table class="one-line">
 <thead><tr><th>Dataset</th><th>Asked</th><th class="num">Subjects</th><th class="num wide-only">Recorded</th><th class="num wide-only">Declined</th><th>State</th><th class="more"><span class="visually-hidden">Details</span></th></tr></thead>
 <tbody>
-{% for w in shown %}
+{% for w in data.wants %}
 <tr><td><code>{{ w.dataset }}</code></td><td>{{ w.asked }}</td><td class="num">{{ w.subjects }}</td><td class="num wide-only">{{ w.recorded }}</td><td class="num wide-only">{{ w.declined }}</td>
 <td><span class="badge{% if w.kept_current %} good{% endif %}">{{ w.state }}</span></td>
 <td class="more"><details class="row-detail" name="wants"><summary aria-label="Details of want {{ w.want_id }}">…</summary><div class="row-detail-pop"><h3>Want {{ w.want_id }}</h3><dl><dt>Dataset</dt><dd>{{ w.dataset }}</dd><dt>Asked</dt><dd>{{ w.asked }}</dd><dt>Subjects</dt><dd>{{ w.subjects }}</dd><dt>Rows sent</dt><dd>{{ w.recorded }}</dd><dt>Subjects declined</dt><dd>{{ w.declined }}</dd><dt>Heard</dt><dd>{{ w.heard_at.strftime("%Y-%m-%d %H:%M:%S UTC") if w.heard_at else "" }}</dd></dl></div></details></td></tr>
@@ -40,8 +36,6 @@
 </tbody>
 </table>
 </om-pager>
-{% elif data.wants %}
-<div class="panel-body"><p class="empty-state">No want matches "{{ query }}": search by its ID, its dataset, what was asked or its state.</p></div>
 {% else %}
 <div class="panel-body"><p class="empty-state">Nothing asked yet: the lake asks when a reader reads what has not been recorded.</p></div>
 {% endif %}

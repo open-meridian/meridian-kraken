@@ -7,7 +7,9 @@ bar or candle is on either page; viewing prices is for the reading roles.
 - **Connection** (`/`, `read_connection`): where the plugin answers from
   (Kraken, or synthetic mode), how Kraken has answered -- its calls,
   rate limits met, failures and the last error -- what Kraken allows and
-  what the plugin spends of it, and the venue master's ID it resolved.
+  what the plugin spends of it, the venue master's ID it resolved, and from
+  contract v19 the stream's session: open or not, how many products are on
+  it, how often it opened and dropped, its messages and the last one's time.
 - **Datasets** (`/datasets`, `read_datasets`): what it serves -- each
   dataset of its catalogue, its data types, modes, cadence, declared day and
   standard terms -- the product map (products listed, those serving the
@@ -15,8 +17,8 @@ bar or candle is on either page; viewing prices is for the reading roles.
   not resolved), what Kraken entitles it to (public market data, no key:
   every product it lists), the standing wants it keeps current, and the
   wants it heard, each with what it recorded and declined. The wants grow,
-  so a search above them narrows the rows drawn (matching every word); the
-  tool answers them all.
+  so the kit's search (`om-pager search`, kit 0.11.0) narrows them as typed,
+  beside its pager; the tool answers them all.
 
 Each page declares the typed record it renders (`answers=`), so each is also
 a read tool on the deployment's MCP surface answering the same record
@@ -42,8 +44,6 @@ TITLE = "Kraken"
 ENTITLEMENT = "Public market data: no key, so nothing to resolve at Kraken; every pair it lists"
 
 pages = meridian.Pages(TITLE, templates=Path(__file__).parent / "templates")
-#: The longest search the Datasets page reads.
-MOST_QUERY = 100
 
 
 class _Held:
@@ -89,6 +89,15 @@ class Connection:
     last_error: str = ""
     venue_id: str = ""
     venue_held: bool = False
+    #: The stream (contract v19): "off" while nothing stands to stream,
+    #: "connecting", "open", or "waiting" to open again after a drop.
+    stream_state: str = "off"
+    streaming: int = 0
+    stream_opened: int = 0
+    stream_dropped: int = 0
+    stream_messages: int = 0
+    last_message_at: datetime | None = None
+    stream_error: str = ""
 
 
 def connection_now() -> Connection:
@@ -97,6 +106,7 @@ def connection_now() -> Connection:
         return Connection(venue=TITLE, mode="starting", healthy=False)
     session = dgm.market.session
     health = session.health
+    stream = dgm.stream.health
     healthy = health.last_ok_ns >= health.last_failed_ns and (
         health.last_ok_ns > 0 or health.calls == 0
     )
@@ -114,14 +124,22 @@ def connection_now() -> Connection:
         last_error=health.last_error,
         venue_id=dgm.venue.venue_id,
         venue_held=dgm.venue.asked and not dgm.venue.missing,
+        stream_state=stream.state,
+        streaming=len(stream.subscribed),
+        stream_opened=stream.opened,
+        stream_dropped=stream.dropped,
+        stream_messages=stream.messages,
+        last_message_at=_when(stream.last_message_ns),
+        stream_error=stream.last_error,
     )
 
 
 @pages.page("/", "Connection", levels="admin", answers=Connection, name="read_connection")
 def connection(request: meridian.Request) -> meridian.Response:
-    """How the plugin reaches Kraken: the mode, the endpoint, Kraken's limits
-    and what the plugin spends of them, its calls, rate limits met and
-    failures, the last error, and the venue master's ID it resolved."""
+    """How the plugin reaches Kraken: the mode, the endpoints, Kraken's
+    limits and what the plugin spends of them, its calls, rate limits met and
+    failures, the last error, the venue master's ID it resolved, and the
+    stream's session."""
     return pages.answer("connection.html", connection_now())
 
 
@@ -230,12 +248,6 @@ def _state(kept_current: bool, standing: bool) -> str:
     return "Kept current" if kept_current else "Withdrawn" if standing else "Answered"
 
 
-def matching(query: str, *texts: str) -> bool:
-    """Whether every word of a search is in one of `texts`, case aside."""
-    held = " ".join(texts).lower()
-    return all(word in held for word in query.lower().split())
-
-
 def _mode(mode: object) -> str:
     if isinstance(mode, int):
         named = str(sidecar_pb2.ObservationMode.Name(mode))
@@ -248,8 +260,4 @@ def datasets(request: meridian.Request) -> meridian.Response:
     """What the plugin serves the lake: each dataset of its catalogue, the
     product map, what Kraken entitles it to, the standing wants it keeps
     current, and the wants it heard with what each recorded and declined."""
-    data = datasets_now()
-    # A browser's search narrows the wants drawn; the tool answers them all.
-    query = request.query.get("q", "").strip()[:MOST_QUERY]
-    shown = [w for w in data.wants if matching(query, w.want_id, w.dataset, w.asked, w.state)]
-    return pages.answer("datasets.html", data, now=time.time(), query=query, shown=shown)
+    return pages.answer("datasets.html", datasets_now(), now=time.time())

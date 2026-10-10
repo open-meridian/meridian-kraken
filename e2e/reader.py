@@ -7,18 +7,25 @@ resolved by Kraken (whose code for it is XXBT), a record the plugin names by
 reading it (W3.6, a dgm's from contract v18 as ruled 2026-10-10); and the
 dollar and the euro by ISO 4217.
 
+From contract v19 it holds `signal` too, which reads and hears trades and
+quotes (`reporting` reads neither).
+
 It is not the plugin, and is never built into its image: `make e2e` runs it
 from this file in a container of the plugin's image, which carries the SDK,
 beside the plugin on core's harness. It answers its page as JSON for the
 harness's runner (`page --instance reader --level read PATH`):
 
   /resolve                                    the records' IDs, by name;
-  /follow?subject=ID...                       hears prices recorded for them;
+  /follow?subject=ID...                       hears prices, trades and quotes
+                                              recorded for them;
   /heard                                      what it heard: each row's dataset,
                                               row key, version, kind and amount;
   /prices?subject=ID[&date=D][&kind=K][&dataset=D]
                                               one read: its rows, and what it
-                                              left unanswered and why.
+                                              left unanswered and why;
+  /trades?subject=ID&from=NS&until=NS         trades over a range of one day;
+  /trades?subject=ID&after=PARTITION:SEQ...   trades recorded after a watermark;
+  /quotes?subject=ID                          the latest quotes in force.
 """
 
 import asyncio
@@ -29,7 +36,7 @@ import urllib.parse
 
 import meridian
 from meridian import Interface, Page, SourceChoice
-from meridian.operations import as_money
+from meridian.operations import as_decimal, as_money
 from meridian.plugin.v1 import operations_pb2 as ops
 
 PORT = 8088
@@ -40,6 +47,45 @@ ASKED = {
     "usd": [ops.Identifier(scheme="iso4217", value="USD")],
     "eur": [ops.Identifier(scheme="iso4217", value="EUR")],
 }
+
+
+def trade_json(trade, caught_up=False):
+    meta, money = trade.meta, as_money(trade.price)
+    return {
+        "dataset": meta.source.dataset,
+        "venue_id": meta.source.venue_id,
+        "row_key": meta.row_key,
+        "version": meta.version,
+        "business_date": meta.business_date,
+        "amount": str(money.amount),
+        "quantity": str(as_decimal(trade.quantity)),
+        "instrument_id": money.instrument_id,
+        "currency_code": money.currency_code,
+        "aggressor": ops.Aggressor.Name(trade.aggressor),
+        "eligible": [ops.Eligible.Name(getattr(trade.attributes.consolidated, f))
+                     for f in ("high_low", "open", "close", "volume")],
+        "unconverted": [u.scheme for u in meta.unconverted],
+        "raw": meta.raw.key,
+        "caught_up": caught_up,
+    }
+
+
+def quote_json(quote):
+    meta = quote.meta
+    side = lambda field: str(as_money(getattr(quote, field)).amount) if quote.HasField(field) else ""  # noqa: E731
+    size = lambda field: str(as_decimal(getattr(quote, field))) if quote.HasField(field) else ""  # noqa: E731
+    return {
+        "dataset": meta.source.dataset,
+        "row_key": meta.row_key,
+        "business_date": meta.business_date,
+        "bid": side("bid"), "bid_quantity": size("bid_quantity"),
+        "ask": side("ask"), "ask_quantity": size("ask_quantity"),
+        "raw": meta.raw.key,
+    }
+
+
+def watermark_json(watermark):
+    return [f"{p.partition}|{p.sequence}" for p in watermark.partitions]
 
 
 def price_json(price):
@@ -63,6 +109,8 @@ class Reader:
     def __init__(self, plugin):
         self.plugin = plugin
         self.heard = []
+        self.trades = []
+        self.quotes = []
         self.following = None
         self.ids = {}
 
@@ -78,6 +126,12 @@ class Reader:
     async def on_price(self, heard):
         self.heard.append(price_json(heard.message.price))
 
+    async def on_trade(self, heard):
+        self.trades.append(trade_json(heard.message.trade, getattr(heard, "caught_up", False)))
+
+    async def on_quote(self, heard):
+        self.quotes.append(quote_json(heard.message.quote))
+
     async def answer(self, path, query):
         one = lambda name: query.get(name, [""])[0]  # noqa: E731
         if path == "/resolve":
@@ -85,10 +139,39 @@ class Reader:
         if path == "/follow":
             if self.following is None:
                 self.following = asyncio.ensure_future(
-                    self.plugin.receive(prices_recorded=self.on_price, subjects=query["subject"]))
+                    self.plugin.receive(prices_recorded=self.on_price, trades_recorded=self.on_trade,
+                                        quotes_recorded=self.on_quote, subjects=query["subject"]))
             return {"following": query["subject"]}
         if path == "/heard":
-            return {"heard": self.heard}
+            return {"heard": self.heard, "trades": self.trades, "quotes": self.quotes}
+        if path == "/trades":
+            asked = {"subjects": [ops.SubjectRef(entity_id=s) for s in query["subject"]]}
+            if query.get("after"):
+                partitions = [ops.PartitionSequence(partition=p.rsplit(":", 1)[0],
+                                                     sequence=int(p.rsplit(":", 1)[1]))
+                              for p in query["after"]]
+                asked["after_watermark"] = ops.Watermark(partitions=partitions)
+            else:
+                asked["valid_from_ns"], asked["valid_until_ns"] = int(one("from")), int(one("until"))
+            rows, cursor, watermark, unanswered = [], "", None, []
+            while True:
+                answer = await self.plugin.list_trades(**asked, page_size=500, cursor=cursor)
+                rows += [trade_json(t) for t in answer.trades]
+                watermark = watermark_json(answer.watermark)
+                unanswered += [{"subject": u.subject.entity_id, "dataset": u.dataset,
+                                "reason": ops.UnansweredReason.Name(u.reason)}
+                               for u in answer.unanswered]
+                cursor = answer.next_cursor
+                if not cursor:
+                    break
+            return {"trades": rows, "watermark": watermark, "unanswered": unanswered}
+        if path == "/quotes":
+            answer = await self.plugin.list_quotes(
+                subjects=[ops.SubjectRef(entity_id=s) for s in query["subject"]])
+            return {"quotes": [quote_json(q) for q in answer.quotes],
+                    "unanswered": [{"subject": u.subject.entity_id, "dataset": u.dataset,
+                                    "reason": ops.UnansweredReason.Name(u.reason)}
+                                   for u in answer.unanswered]}
         if path == "/prices":
             asked = {"subjects": [ops.SubjectRef(entity_id=s) for s in query["subject"]]}
             if one("dataset"):

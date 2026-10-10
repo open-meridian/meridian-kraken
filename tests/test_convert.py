@@ -1,14 +1,20 @@
 """Kraken's answers read into the venue's values: its assets, daily OHLC,
-ticker and level-1 book (convert.py), on the shapes Kraken sends."""
+ticker, level-1 book, trades and v2 stream (convert.py), on the shapes Kraken
+sends."""
 
 from __future__ import annotations
 
+import json
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
+from typing import cast
 
 from kraken import convert
-from kraken.market import json_decimal, number
+from kraken.market import Print, Top, json_decimal, number
+from kraken.raw import RawStore
 from kraken.synthetic import Synthetic
+from kraken.venue import Kraken, RateLimiter
 
 PAIRS = Synthetic().held["pairs"]
 
@@ -101,3 +107,78 @@ def test_number_refuses_what_is_not_the_contracts_decimal() -> None:
     assert number("62431.30000") == Decimal("62431.30000")
     for refused in (None, True, 1.5, "NaN", "abc", "0." + "1" * 19):
         assert number(refused) is None, refused
+
+
+def test_a_pair_is_named_on_the_v2_stream_with_xbt_as_btc() -> None:
+    names = {p.product: p.stream for p in convert.listing(PAIRS)}
+    assert names["XXBTZUSD"] == "BTC/USD" and names["XBTUSDC"] == "BTC/USDC"
+    assert names["ZEURZUSD"] == "EUR/USD"
+    assert convert.stream_name("XDG/USD") == "DOGE/USD" and convert.stream_name("") == ""
+
+
+def test_a_trade_names_the_takers_side_its_time_read_exactly() -> None:
+    body = json_decimal(json.dumps({"r": Synthetic().held["trades"]["XXBTZUSD"]}))["r"]
+    read = convert.prints("XXBTZUSD", body, "responses/Trades/XXBTZUSD.json")
+    assert [p.ident for p in read][:2] == ["110938301", "110938302"]
+    first = read[0]
+    assert (first.side, first.side_of, first.price, first.quantity) == (
+        "sell", "taker", Decimal("61990.10000"), Decimal("0.01500000"))  # fmt: skip
+    assert first.at_ns == 1_791_633_590_123_400_000
+    assert first.raw_key == "responses/Trades/XXBTZUSD.json#110938301"
+    assert convert.seconds_ns(Decimal("1791657987.852269")) == 1_791_657_987_852_269_000
+
+
+def _market(tmp_path: Path) -> convert.KrakenMarket:
+    client = Kraken(RawStore(tmp_path), transport=Synthetic(),
+                    limiter=RateLimiter(1000.0, 1000, sleep=lambda _: None))  # fmt: skip
+    return convert.KrakenMarket(client, "synthetic")
+
+
+def test_the_v2_streams_trades_and_ticker_are_read_and_kept_first(tmp_path: Path) -> None:
+    market = _market(tmp_path)
+    heard = market.heard(
+        '{"channel":"trade","type":"update","data":[{"symbol":"BTC/USD","side":"buy",'
+        '"price":62000.5,"qty":0.00010000,"ord_type":"limit","trade_id":7,'
+        '"timestamp":"2026-10-10T11:00:00.500000Z"},{"symbol":"BTC/USD","side":"sell",'
+        '"price":62000.4,"qty":0.2,"ord_type":"market","trade_id":8,'
+        '"timestamp":"2026-10-10T11:00:00.600000Z"}]}',
+        7,
+    )
+    prints = cast(list[Print], heard)
+    assert [(p.product, p.side, p.side_of, p.ident) for p in prints] == [
+        ("BTC/USD", "buy", "taker", "7"), ("BTC/USD", "sell", "taker", "8")]  # fmt: skip
+    assert str(prints[0].quantity) == "0.00010000", "a JSON number read from its own text"
+    kept = market.client.store.get(prints[0].raw_key)
+    assert kept and kept["call"] == "stream" and kept["received_at_ns"] == 7
+    heard = market.heard(
+        '{"channel":"ticker","type":"update","data":[{"symbol":"BTC/USD","bid":62000.4,'
+        '"bid_qty":1.25,"ask":62000.5,"ask_qty":0.5,"last":62000.5,'
+        '"timestamp":"2026-10-10T11:00:00.700000Z"}]}',
+        8,
+    )
+    [best] = cast(list[Top], heard)
+    assert (best.bid, best.bid_size, best.ask, best.ask_size) == (
+        Decimal("62000.4"), Decimal("1.25"), Decimal("62000.5"), Decimal("0.5"))  # fmt: skip
+    assert best.at_ns == convert.rfc3339_ns("2026-10-10T11:00:00.700000Z")
+    assert market.heard('{"channel":"heartbeat"}', 9) == []
+    assert market.heard('{"channel":"status","type":"update","data":[]}', 9) == []
+    assert sorted(p.stem for p in tmp_path.rglob("*.jsonl")) == ["status", "ticker", "trade"]
+
+
+def test_the_subscription_asks_for_trades_and_each_change_of_the_best(tmp_path: Path) -> None:
+    trade, ticker = (json.loads(s) for s in _market(tmp_path).subscriptions(["BTC/USD"]))
+    assert trade == {"method": "subscribe", "params": {"channel": "trade",
+                     "symbol": ["BTC/USD"], "snapshot": True}}  # fmt: skip
+    assert ticker["params"] == {"channel": "ticker", "symbol": ["BTC/USD"],
+                                "event_trigger": "bbo", "snapshot": True}  # fmt: skip
+
+
+def test_trades_are_read_from_the_time_asked_each_once(tmp_path: Path) -> None:
+    read = _market(tmp_path).trades("XXBTZUSD", 1_791_633_592_000_100_000)
+    assert [p.ident for p in read] == ["110938303", "110938304", "110938305", "110938306"]
+
+
+async def test_a_synthetic_connection_drops_but_the_last_is_held_open(tmp_path: Path) -> None:
+    market = _market(tmp_path)
+    first, last = await market.connect(""), await market.connect("")
+    assert (first.hold, last.hold) == (False, True)  # type: ignore[attr-defined]
