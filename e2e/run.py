@@ -267,9 +267,16 @@ def run():
     read(dollar)
     euro = f"/prices?subject={eur}&date={CLOSED}&kind=close&dataset={VENUE}:daily"
     read(euro)
-    rate = until(90, lambda: read(euro)["prices"], "step 5, the plugin did not record the rate")
-    must(len(rate) == 1 and (rate[0]["amount"] == EUR_CLOSE or not EXACT) and rate[0]["row_key"].startswith("ZEURZUSD:")
-         and rate[0]["currency_code"] in ("USD", ""), f"step 5, the euro in dollars: {rate}")
+    # A developer's recording may hold no EUR/USD day (those of 2026-10-03
+    # do not): there the euro is answered as declined, never made up.
+    def euro_answered():
+        said = read(euro)
+        return said if said["prices"] or (not EXACT and said["unanswered"]) else None
+    rate = until(90, euro_answered, "step 5, the plugin did not record the rate")["prices"]
+    must((not rate and not EXACT) or (
+         len(rate) == 1 and (rate[0]["amount"] == EUR_CLOSE or not EXACT)
+         and rate[0]["row_key"].startswith("ZEURZUSD:")
+         and rate[0]["currency_code"] in ("USD", "")), f"step 5, the euro in dollars: {rate}")
 
     # 6. Live: kept current while it stands, then withdrawn.
     live = f"/prices?subject={btc}&dataset={VENUE}:live"
