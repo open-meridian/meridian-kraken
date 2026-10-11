@@ -16,6 +16,9 @@ dependencies = [
   "open-meridian==0.24.0",
 ]
 
+[project.urls]
+Repository = "https://github.com/open-meridian/plugin-kraken"
+
 [project.optional-dependencies]
 dev = [
   "pytest>=8",

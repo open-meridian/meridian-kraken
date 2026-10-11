@@ -30,13 +30,12 @@ MERIDIAN_VERSION := $(shell sed -n 's/^ *MERIDIAN_VERSION: *\([0-9][0-9.]*\).*/\
 
 # The released runtime `make e2e` proves the plugin against, by tag and digest,
 # and core's plugin harness published with it, by the same commit's tag and
-# its digest: core main e149c69, the lake's 1b, trades and quotes (contract
-# v19). Moved together by a deliberate commit, and with the SDK when a
+# its digest: core main 93f9554, contract v20. Moved together by a deliberate commit, and with the SDK when a
 # contract version changes.
 # `make e2e RUNTIME_IMAGE=...:latest HARNESS_IMAGE=...:latest` tries a newer
 # core; e2e-latest.yaml does that weekly.
-RUNTIME_IMAGE ?= ghcr.io/open-meridian/meridian-runtime:e149c69@sha256:efc24e4b95ecea75d236fe57379edb1a0834d3bb1fa951e783e44c1d02bae986
-HARNESS_IMAGE ?= ghcr.io/open-meridian/meridian-harness:e149c69@sha256:04514be78c9aec051c2b834d361fc78c9ff0e3493f3c98651f383ac769bb4445
+RUNTIME_IMAGE ?= ghcr.io/open-meridian/meridian-runtime:93f9554@sha256:94c44adc1242c7b0932cdd9387e719107920504e806844c31c32bbeb916a2ed1
+HARNESS_IMAGE ?= ghcr.io/open-meridian/meridian-harness:93f9554@sha256:c937810eb6fd8e9fa25ac7f19cedd2042a9cf7b519757b904fc77d890313fb5e
 # Its roles as pyproject.toml declares them (a JSON list's items), so the
 # harness launches it as `meridian plugin upload` would; and the e2e's reader
 # (e2e/reader.py) beside it, holding `custody` beside `reporting` to resolve

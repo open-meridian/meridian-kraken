@@ -9,7 +9,7 @@ stated it and every code converted at the edge. No key: Kraken's market data
 is public.
 
 It is the second half of the lake's crypto pair, with
-[meridian-coinbase](https://github.com/open-meridian/meridian-coinbase): the two
+[meridian-coinbase](https://github.com/open-meridian/plugin-coinbase): the two
 pass one data suite unchanged between them (meridian-design
 `plans/the-lake-prices-the-book.md`, rows 6 and 19).
 
