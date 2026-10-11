@@ -1,4 +1,4 @@
-"""Kraken's public market data as an Open Meridian `dgm`.
+"""Kraken's public market data as an Open Meridian data plugin.
 
 It connects to the sidecar it is launched beside, declaring its catalogue,
 its storage and its settings (declaration.py) and its pages (page.py), and
@@ -7,7 +7,7 @@ serves them. Then it maps Kraken's products to the deployment's instruments
 standing want current (dgm.py) -- from contract v19 its trades and best bid
 and offer from the venue's stream, kept open while a standing want puts
 anything on it (stream.py) -- until stopped. Everything goes through the
-sidecar; nothing but Kraken's public REST and its stream are called, and in synthetic mode
+sidecar; nothing but Kraken's public REST and its stream are called, and with sample data
 not even that (synthetic.py).
 
 It holds nothing it cannot lose: Kraken's raw responses and the product map
@@ -28,9 +28,9 @@ import meridian
 
 from . import raw
 from .convert import KrakenMarket
-from .declaration import DECLARATION, SYNTHETIC
+from .declaration import DECLARATION, SAMPLE_DATA
 from .dgm import Dgm, cancelled
-from .page import TITLE, hold, pages
+from .page import TITLE, figures_now, hold, pages
 from .products import ProductMap
 from .raw import RawStore, storage_root, tend
 from .synthetic import Recorded, Synthetic
@@ -44,7 +44,7 @@ RECORDED = "recorded"
 
 
 def market(store: RawStore, synthetic: bool) -> KrakenMarket:
-    """Kraken itself, or in synthetic mode its answers from files: a
+    """Kraken itself, or with sample data its answers from files: a
     developer's recorded exchanges where storage holds them, else this
     package's synthetic ones."""
     if not synthetic:
@@ -68,7 +68,7 @@ async def watch_settings(
     mode changed, its own product map read back from storage, and each day's
     raw responses past their window moved. Answering from Kraken, the map is
     made on the first want, never before: nothing is asked of Kraken, and
-    nothing resolved, until the lake wants something of it. In synthetic mode
+    nothing resolved, until the lake wants something of it. With sample data
     it is made at once, so a developer has the instruments it resolved to
     read before anything is wanted."""
     while True:
@@ -84,8 +84,8 @@ async def _apply_settings(
 ) -> None:
     async for delivered in plugin.settings():
         values = delivered.values
-        log.info("settings delivered: synthetic %s", values.get(SYNTHETIC))
-        synthetic = values.get(SYNTHETIC) is True
+        log.info("settings delivered: sample data %s", values.get(SAMPLE_DATA))
+        synthetic = values.get(SAMPLE_DATA) is True
         mode = dgm.market.session.mode
         if synthetic != (mode != "live"):
             chosen = market(store, synthetic)
@@ -119,14 +119,19 @@ async def hear_wants(plugin: meridian.Plugin, dgm: Dgm, configured: asyncio.Even
 
 
 async def report_health(plugin: meridian.Plugin, dgm: Dgm) -> None:
-    """Say on the heartbeat whether Kraken answers, each minute."""
+    """Each minute: its datasets' licences read again (contract v20), and
+    on the heartbeat whether Kraken answers, with the data role's figures."""
     while True:
+        try:
+            await dgm.read_licences()
+        except meridian.MeridianError as failed:
+            log.warning("licences not read: %s", failed)
         health = dgm.market.session.health
         healthy = health.last_ok_ns >= health.last_failed_ns
         detail = f"{dgm.market.name} answers" if healthy else health.last_error
         try:
-            await plugin.report(healthy=healthy, detail=detail[:200])
-        except meridian.MeridianError as failed:
+            await plugin.report(healthy=healthy, detail=detail[:200], figures=figures_now())
+        except (meridian.MeridianError, ValueError) as failed:
             log.warning("health not reported: %s", failed)
         await asyncio.sleep(60)
 

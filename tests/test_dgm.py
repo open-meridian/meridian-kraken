@@ -319,7 +319,7 @@ async def test_a_securitys_ticker_that_is_a_coins_code_names_no_asset(lake: Lake
 
 
 async def test_with_no_read_of_an_instrument_nothing_is_named(lake: Lake) -> None:
-    # On a runtime from before the ruling of 2026-10-10, which grants a dgm
+    # On a runtime from before the ruling of 2026-10-10, which grants a data plugin
     # no read of an instrument's record.
     def refused(_: Any) -> Any:
         raise meridian.NotGranted(
@@ -565,3 +565,35 @@ async def test_a_batch_the_lake_refuses_is_said_and_the_stream_goes_on(lake: Lak
     await _drive(dgm)
     assert dgm.stream.health.opened == 2, "both connections opened, the refusal said"
     assert dgm.pending_trades == [], "a refused batch is not sent again and again"
+
+
+async def test_a_restarts_gap_refused_is_said_and_the_stream_goes_on(lake: Lake) -> None:
+    # A runtime that does not answer ListTrades for its own rows (before
+    # contract v20): the gap is not read back, and the subject still streams.
+    def refused(_: Any) -> Any:
+        raise meridian.NotGranted("platform.lake.query.trades", "not granted")
+
+    lake.answer("ListTrades", refused)
+    dgm, _ = await _streaming(lake)
+    assert dgm.backfilled and dgm.streams, "the subject went on the stream all the same"
+    assert not lake.rows("RecordTrades")
+
+
+async def test_licences_not_answered_leave_each_not_licensed_yet(lake: Lake) -> None:
+    def refused(_: Any) -> Any:
+        raise meridian.NotGranted("platform.lake.query.datasets", "not granted")
+
+    lake.answer("ListDatasets", refused)
+    dgm = dgm_on(lake)
+    assert await dgm.read_licences() == frozenset() and dgm.reads_licences is False
+    assert await dgm.read_licences() == frozenset(), "asked once, then said"
+    assert len(lake.on("ListDatasets")) <= 1
+
+
+async def test_each_dataset_counts_what_it_recorded(lake: Lake) -> None:
+    dgm = dgm_on(lake)
+    btc = await lake.held(dgm, venue.BASE)
+    await hear(lake, dgm, wanted(dgm, "WNT-1", "daily", [btc], day=venue.CLOSED))
+    daily = dgm.sent_to("daily")
+    assert daily.recorded > 0 and daily.last_ns == venue.NOW_NS
+    assert dgm.sent_to("live").recorded == 0 and dgm.sent_to("trades").last_ns == 0

@@ -3,6 +3,7 @@ printed as one HTML file: for looking at them without a deployment.
 
     python -m kraken.preview connection > preview/connection.html
     python -m kraken.preview datasets > preview/datasets.html
+    python -m kraken.preview datasets-empty > preview/datasets-empty.html
 
 The page links the kit where the dashboard serves it, /.meridian/ui/<version>/,
 so serve it beside the kit to see it styled (meridian-ui's `make serve`);
@@ -15,7 +16,10 @@ exchanges this package carries, and the lake asks for a run of days and
 keeps two subjects current, as a reader would make it, so the Datasets page
 has wants to page through and search (the kit's search, in the browser);
 their products are streamed from the synthetic venue's first connection,
-which drops, so Connection says how the stream has gone.
+which drops, so Connection says how the stream has gone. A deployment
+admin has licensed the daily dataset and not the others (contract v20).
+`datasets-empty` is the page of a plugin just started, before the lake has
+asked anything: its next step, as a deployment admin sees it.
 """
 
 from __future__ import annotations
@@ -119,17 +123,26 @@ async def _worked() -> Dgm:
     dgm.stream.connect = replayed
     await dgm.stream.run(once=True)
     await dgm.flush()
+    dgm.licensed = frozenset({dgm.dataset("daily")})
     return dgm
+
+
+async def _fresh() -> Dgm:
+    """The plugin just started: nothing asked, nothing read of the venue."""
+    lake = Recorder("kraken")
+    store = RawStore(Path(tempfile.mkdtemp(prefix="kraken-preview-")))
+    client = Kraken(store, transport=Synthetic(), clock_ns=lambda: NOW_NS)
+    return Dgm(lake, KrakenMarket(client, "synthetic"), ProductMap(), clock_ns=lambda: NOW_NS)
 
 
 def main(argv: list[str]) -> int:
     page = argv[0] if argv else "connection"
-    paths = {"connection": "/", "datasets": "/datasets"}
+    paths = {"connection": "/", "datasets": "/datasets", "datasets-empty": "/datasets"}
     if page not in paths:
-        print(f"no page {page!r}: connection or datasets", file=sys.stderr)
+        print(f"no page {page!r}: connection, datasets or datasets-empty", file=sys.stderr)
         return 2
-    hold(asyncio.run(_worked()))
-    answered = PageClient(pages).get(paths[page], "admin")
+    hold(asyncio.run(_fresh() if page == "datasets-empty" else _worked()))
+    answered = PageClient(pages, deployment_admin=True).get(paths[page], "admin")
     sys.stdout.write(answered.text)
     return 0 if answered.status == 200 else 1
 

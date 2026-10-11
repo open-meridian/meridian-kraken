@@ -15,7 +15,7 @@ plugin depends on nothing but the SDK, so there is no WebSocket library.
 `SILENT_SECONDS`, is opened again after a wait that doubles from one second
 to a minute, reset once a connection has stayed up a minute: inside Kraken's
 150 reconnects in ten minutes per IP, and Coinbase's. Each time it opens,
-`opened` is called before any message is read, so the dgm can fill the gap
+`opened` is called before any message is read, so the plugin can fill the gap
 from the venue's REST history (dgm.py: the trades after the last one it
 recorded), and readers catch up from the lake by the watermark they last
 saw.
@@ -150,7 +150,7 @@ class WebSocket:
                 await asyncio.wait_for(self.writer.wait_closed(), 5)
 
 
-async def websocket(url: str, user_agent: str = "meridian-dgm", timeout: float = 15.0) -> Socket:
+async def websocket(url: str, user_agent: str = "meridian-data", timeout: float = 15.0) -> Socket:
     """A WebSocket opened to `url` (`wss://`), its upgrade checked."""
     split = urllib.parse.urlsplit(url)
     if split.scheme != "wss" or not split.hostname:

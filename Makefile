@@ -50,15 +50,17 @@ export MERIDIAN_RUNTIME_IMAGE := $(RUNTIME_IMAGE)
 export E2E_DIR := $(CURDIR)/e2e
 E2E := docker compose -p $(PLUGIN)-e2e -f .e2e/harness/compose.yaml \
        -f .e2e/harness/plugins.yaml -f e2e/plugin.yaml
-# The files every pair keeps byte for byte: the suite, the dgm and its tests.
+# The files every pair keeps byte for byte: the suite, the data plugin's work
+# and its tests, and the data role's pages.
 SAME := src/$(PLUGIN)/market.py src/$(PLUGIN)/dgm.py src/$(PLUGIN)/products.py src/$(PLUGIN)/raw.py \
-        src/$(PLUGIN)/stream.py tests/test_suite.py tests/test_dgm.py tests/test_page.py \
-        tests/test_raw.py tests/test_stream.py tests/conftest.py
+        src/$(PLUGIN)/stream.py src/$(PLUGIN)/page.py src/$(PLUGIN)/templates/connection.html \
+        src/$(PLUGIN)/templates/datasets.html tests/test_suite.py tests/test_dgm.py \
+        tests/test_page.py tests/test_raw.py tests/test_stream.py tests/conftest.py
 
 help:
 	@echo "  make ci-local       every gate: lint, tests, plugin check, the image, e2e, and the pair held the same"
 	@echo "  make ci-remote      what ci.yaml runs: lint and tests"
-	@echo "  make test           the tests, in a container: the SDK's dgm suite among them"
+	@echo "  make test           the tests, in a container: the SDK's data suite among them"
 	@echo "  make lint           ruff and mypy, strict"
 	@echo "  make check          what check.yaml runs: meridian plugin check --verified --run-tests"
 	@echo "  make image          build the plugin's image, as upload would, and check it"
@@ -131,7 +133,7 @@ image:
 		|| { echo "image FAILED: /plugin holds files; only the installed package belongs" >&2; exit 1; }
 	@echo "image OK: $(IMAGE) on $(BASE), $$(docker image inspect -f '{{.Size}}' $(IMAGE) | awk '{printf "%.0f MB", $$1/1e6}')"
 
-# The plugin, in synthetic mode, on the plugin harness published with the
+# The plugin, with sample data, on the plugin harness published with the
 # runtime it pins, beside the e2e's reader: e2e/run.py says each step. Its own
 # compose project and no published port; nothing outlives it.
 e2e: image
@@ -140,7 +142,7 @@ e2e: image
 # The same run replaying a developer's recorded exchanges (the plan's Q11,
 # `make e2e-recorded`): RECORDED names a directory of this plugin's raw
 # records of Kraken's real answers, recorded under personal use and never
-# committed, mounted where synthetic mode replays them from. Not in ci-local:
+# committed, mounted where sample data replays them from. Not in ci-local:
 # what is recorded is a developer's, never CI's.
 # DAY names a day the recordings hold daily candles for, which the run reads.
 RECORDED ?=
@@ -176,10 +178,10 @@ e2e-run:
 preview:
 	@$(DOCKER) build $(SDK_CONTEXT) -f Dockerfile.check --target test -t $(CHECK) . >/dev/null 2>&1
 	@mkdir -p preview
-	@for page in connection datasets; do \
+	@for page in connection datasets datasets-empty; do \
 		docker run --rm $(CHECK) python -m $(PLUGIN).preview $$page >preview/$$page.html || exit 1; \
 	done
-	@echo "preview: preview/connection.html, preview/datasets.html"
+	@echo "preview: preview/connection.html, preview/datasets.html, preview/datasets-empty.html"
 
 # The pair passes one suite unchanged (plans/the-lake-prices-the-book, row 6):
 # the files it shares are held byte for byte to the sibling's, the package's

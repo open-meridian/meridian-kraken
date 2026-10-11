@@ -8,7 +8,7 @@ The same module in meridian-coinbase and meridian-kraken.
 A product names a market, not an asset, and never becomes a key: the base
 asset is a row's subject, the quote asset what its price is in.
 
-**A subject is the deployment's own record** (W3.6, a dgm's from contract
+**A subject is the deployment's own record** (W3.6, a data plugin's from contract
 v18 as ruled 2026-10-10). The lake wants instruments by the deployment's ID,
 most of them a custodian's records; the plugin reads each record and names
 the venue's asset it is by its identifiers -- the venue's own code, the one

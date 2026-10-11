@@ -2,10 +2,10 @@
 
 A Meridian plugin, in Python on the open-meridian SDK, that puts Kraken's
 public market data into a deployment's lake, its codes converted
-at the edge: a `dgm` (W10, contracts v18 and v19). It runs beside a sidecar in a
+at the edge: a data plugin (the role `data`; W10, contracts v18 to v20). It runs beside a sidecar in a
 Meridian deployment and reaches nothing else but that sidecar and Kraken's
 public REST and v2 WebSocket (no key): what it may publish and subscribe to comes
-from the role `pyproject.toml` declares under `[tool.meridian]` (`dgm`), once
+from the role `pyproject.toml` declares under `[tool.meridian]` (`data`), once
 a deployment admin approves it.
 
 - `src/kraken/__main__.py` connects to the sidecar declaring the catalogue,
@@ -23,19 +23,19 @@ a deployment admin approves it.
   documentation supports, daily OHLC, the ticker, the level-1 book, trades
   and the v2 stream's messages, every
   figure a `Decimal` from Kraken's text (`json_decimal`, never `float`).
-  `synthetic.py` answers instead of Kraken in synthetic mode: the synthetic
+  `synthetic.py` answers instead of Kraken with sample data: the synthetic
   exchanges in `src/kraken/synthetic/`, or a developer's recorded ones.
 - **Everything from there to the lake is shared with meridian-coinbase, byte
   for byte**: `market.py`, `dgm.py`, `products.py`, `raw.py`, `stream.py`
-  (the WebSocket, spoken with the standard library, and its reopening), and
-  the tests `test_suite.py`, `test_dgm.py`, `test_page.py`, `test_raw.py`,
+  (the WebSocket, spoken with the standard library, and its reopening), the
+  pages (`page.py` and `templates/`, the venue's names read from
+  `convert.py`), and the tests `test_suite.py`, `test_dgm.py`, `test_page.py`, `test_raw.py`,
   `test_stream.py` and `conftest.py`
   (`make suite-same` holds them to the sibling's). Change one, change both,
   in the same session; what differs between the venues belongs in
-  `convert.py`, `venue.py`, `synthetic.py`, `declaration.py`, `page.py`'s
-  names, and `tests/venue_cases.py`, the one test module that knows which
+  `convert.py`, `venue.py`, `synthetic.py`, `declaration.py`, and `tests/venue_cases.py`, the one test module that knows which
   venue this is.
-- **The lake's rules, which the SDK's `dgm` suite holds** (`tests/test_suite.py`
+- **The lake's rules, which the SDK's data suite holds** (`tests/test_suite.py`
   runs it, unchanged from meridian-coinbase's): name every subject before
   recording -- read its record (`resolve_instrument`, W3.6) and name
   Kraken's asset by its identifiers (Kraken's code, the global identifier
@@ -65,7 +65,7 @@ a deployment admin approves it.
   stream (`dgm.restream`); `convert.py` says what to subscribe and reads each
   message, kept as a raw record first, into `market.Print` (a trade, with
   the venue's side and whose side it is -- its `side` is the taker's, recorded as the aggressor as sent) and `market.Top` (the best
-  bid and offer with sizes). The dgm records every trade in `trades`
+  bid and offer with sizes). The data plugin records every trade in `trades`
   (`plugin.record_trades`, never conflated) and each product's latest quote
   in `live` (`plugin.record_quotes`, at most once a second), in batches of at
   most 500, only for subjects under a standing want; a crypto trade is
@@ -75,17 +75,36 @@ a deployment admin approves it.
   trades since the last one recorded are read back from the venue's REST
   history (`market.trades`), so a drop leaves no gap; a trade heard twice is
   sent once. A case of the SDK's suite about something the venue never
-  states (condition codes, a withdrawal) is named in
+  states (condition codes, a withdrawal, the side it does not name: a case
+  about a field, `about_field`, from contract v20) is named in
   `tests/venue_cases.NOT_PRESENTED` with why, never faked.
-- **A `dgm` shows no market data** (ruled 2026-10-03). Its pages, Connection
-  and Datasets, are under Manage alone and show its connection, its
-  datasets, the product map and the wants it heard: never a price, bar or
+- **A data plugin shows no market data** (ruled 2026-10-03). Its pages are
+  the data role's (meridian-design `spec/plugin-pages-follow-their-role.md`):
+  Connection and Datasets, under Manage alone, extending the SDK's role
+  templates (`meridian/roles/data/connection.html`, `datasets.html`) with
+  records extending `meridian.roles.data.ConnectionRead` and `DatasetsRead`.
+  Their sections, rows, labels and "not set up yet" states are the role's
+  and are never renamed, reordered or dropped; the venue's nuance goes only
+  at the template's blocks (`vendor_rows`, `vendor_sections`, ...): the
+  venue master's ID under "Key", the stream's session under "Stream", the
+  product map in a section under the venue's name. Never a price, bar or
   candle (`tests/test_page.py` holds every page to it). Each page declares
   the record it renders (`answers=`), so each is a read tool on the
   deployment's MCP surface, `read_connection` and `read_datasets`, answering
-  what the page shows; keep the two in step. Both fit one screen at
-  1440x900 and 390x844 (one-line rows, `om-pager search` for the wants: a
-  list whose rows grow gets the kit's search, kit 0.11.0).
+  what the page shows under the role's field names; keep the two in step.
+  Both fit one screen at 1440x900 and 390x844 (one-line rows; the wants
+  searched and paged by the kit's `om-pager`). The Summary's figures are
+  the role's (`page.figures_now`, `meridian.roles.data.figures`), sent on
+  the heartbeat each minute.
+- **A restart's gap and its licences** (contract v20). Before a subject
+  goes back on the stream after a start, `dgm.backfill` reads the last trade
+  this instance recorded of it (`list_trades(..., latest_recorded=True)`)
+  and records what the venue's history states after it
+  (`meridian.roles.data.backfill_restart`), once per subject per process.
+  `dgm.read_licences` reads which of its own datasets a deployment admin
+  has licensed (`list_datasets`), on start and each minute.
+- **Settings**: the data role's order; with one environment and no key,
+  only `sample_data` (`meridian.sample_data()`), a developer's.
 - **No real response is committed.** Kraken asks its prior permission for any
   non-personal commercial use of its public data, so `tests/` and
   `src/kraken/synthetic/` hold synthetic exchanges, shaped exactly as Kraken

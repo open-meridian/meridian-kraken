@@ -97,6 +97,8 @@ VENUE = "kraken"
 #: source is Kraken, which the platform's curation adds to its record.
 VENUE_IDENTIFIERS: tuple[tuple[str, str, str], ...] = (("symbol", "kraken", "kraken"),)
 NAME = "Kraken"
+#: What the venue entitles this plugin to: its public market data, no key.
+ENTITLED = "Public market data: every pair it lists"
 
 #: Native coins by SLIP-44 coin type, keyed by Kraken's asset code.
 NATIVE: dict[str, str] = {
@@ -355,7 +357,7 @@ def ticked(item: Mapping[str, Any], raw_key: str, received_ns: int) -> Top:
 
 
 class KrakenMarket:
-    """Kraken's market data, as the shared dgm asks for it."""
+    """Kraken's market data, as the shared data plugin's work asks for it."""
 
     venue = VENUE
     venue_identifiers = VENUE_IDENTIFIERS

@@ -1,7 +1,7 @@
 # The framework's check, on every push and pull request: `meridian plugin
 # check --verified --run-tests` holds the plugin to the rules every Meridian
 # plugin is built to, every route that changes something offered to agents
-# as a tool, and runs its tests, the SDK's dgm suite among them.
+# as a tool, and runs its tests, the SDK's data suite among them.
 #
 # The job is named for the make target that runs it locally: `make check`,
 # part of ci-local and so of the pre-push hook, takes the same steps in
@@ -26,7 +26,7 @@ env:
   # into it. Move it deliberately, as the SDK's pin is moved, since a newer
   # one may hold a rule this plugin does not keep yet. `make check` reads it
   # from here.
-  MERIDIAN_VERSION: 0.1.36
+  MERIDIAN_VERSION: 0.1.39
 
 jobs:
   check:

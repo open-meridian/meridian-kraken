@@ -1,7 +1,7 @@
-"""Kraken's side of the dgm suite: this plugin's synthetic exchanges, named for
+"""Kraken's side of the data suite: this plugin's synthetic exchanges, named for
 what each of the suite's cases asks a source to present.
 
-tests/test_suite.py, the same file in meridian-coinbase, runs the SDK's `dgm`
+tests/test_suite.py, the same file in meridian-coinbase, runs the SDK's data
 suite unchanged against each plugin's own conversion; this module is the one
 place it learns which venue it is holding. Each answer comes through the
 plugin's real client, raw records and reading (synthetic.py's transport over
@@ -146,8 +146,8 @@ TICKER = (
 )
 #: Each case of the suite about trades or quotes, the stream's message that
 #: presents it.
-STREAM_CASES = {"a-trade-recorded": TAKER_BUY, "a-standing-want-streamed": TAKER_BUY,
-                "a-quote-recorded": TICKER}  # fmt: skip
+STREAM_CASES = {"a-trade-recorded": TAKER_BUY, "the-takers-side-stated": TAKER_BUY,
+                "a-standing-want-streamed": TAKER_BUY, "a-quote-recorded": TICKER}  # fmt: skip
 #: Why each case Kraken never presents is not (meridian.suites: a case about a
 #: kind of data, `about`, the plugin never publishes).
 NOT_PRESENTED = {
@@ -157,3 +157,8 @@ NOT_PRESENTED = {
     "a-condition-not-converted": "Kraken states no condition codes: none to leave unconverted",
     "a-trade-withdrawn": "Kraken's feed never withdraws a trade it has stated",
 }
+#: A restart's gap (contract v20): the last trade the lake holds of BASE's
+#: dollar pair, by its pair, trade ID and time; and the trades the venue's
+#: history states after it, in order.
+RESTARTED = ("XXBTZUSD", "110938304", 1_791_633_593_500_000_000)
+BACKFILLED = ["110938305", "110938306"]

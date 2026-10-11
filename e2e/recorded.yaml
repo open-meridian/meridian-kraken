@@ -1,5 +1,5 @@
 # `make e2e-recorded`: a developer's recorded exchanges, mounted read-only where
-# the plugin's synthetic mode replays them from, under its storage
+# the plugin's sample data replays them from, under its storage
 # (__main__.py's RECORDED). RECORDED_DIR is the directory RECORDED names,
 # absolute; never committed.
 services:

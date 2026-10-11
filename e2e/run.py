@@ -1,11 +1,11 @@
 """`make e2e` and `make e2e-recorded`: the plugin end to end on core's plugin
-harness (contracts v18 and v19), in synthetic mode, beside a reader
+harness (contracts v18 to v20), with sample data, beside a reader
 (e2e/reader.py).
 
 1. Launched: the plugin registers its catalogue; the deployment admin's tool
    lists its three datasets, `daily`, `live` and `trades`, each on the UTC day
    ending at 00:00, with their modes.
-2. Synthetic mode on: the plugin reads its listing and mints no record for
+2. Sample data on: the plugin reads its listing and mints no record for
    any asset (the first build minted one per asset); the venue, which the
    harness's deployment does not hold (it has no platform), reported
    missing. The reader then names bitcoin as a custodian's book holds it,
@@ -15,7 +15,7 @@ harness (contracts v18 and v19), in synthetic mode, beside a reader
    the reader to them, the broker reloaded with each.
 4. A close wanted: the reader reads the custodian's bitcoin's closes for a
    day nothing has recorded; the lake asks the plugin, which reads the
-   record (W3.6, a dgm's from contract v18 as ruled 2026-10-10), names it
+   record (W3.6, a data plugin's from contract v18 as ruled 2026-10-10), names it
    Kraken's XXBT by its CAIP-19, joins its own code to it, and records
    XXBTZUSD's close in dollars and XBTUSDC's on USDC's own instrument --
    resolved then, the one record it mints -- exactly as the venue stated
@@ -38,10 +38,14 @@ harness (contracts v18 and v19), in synthetic mode, beside a reader
    day, and after the watermark it saw, and hears them; and reads each
    pair's latest quote in `live`, with its sizes.
 8. Parity: the plugin's two read tools answer through the deployment's MCP
-   what its two pages show, the stream's session among them.
+   what its two pages show, the data role's fields under its names, the
+   stream's session among them, and each dataset licensed (contract v20).
 9. Its raw responses are in its granted storage, and `store lake` prints
    each row kept, numbered with no holes in each dataset, the wants asked,
    answered, declined and withdrawn, and the venue's miss.
+10. A restart's gap (contract v20): with BTC's products on the stream again,
+   the plugin restarted reads the last trade it recorded of each subject from
+   the lake (ListTrades, latest_recorded) and the venue's history after it.
 
 Run from the repository's root by the Makefile, which builds the image,
 copies the harness out and writes the plugins' compose file first, and
@@ -193,9 +197,9 @@ def run():
         must(entry["modes"] == modes and entry["day_time_zone"] == "Etc/UTC"
              and entry.get("day_end_minute", 0) == 0, f"step 1, {key}'s entry: {entry}")
 
-    # 2. Synthetic mode: the listing read, no record minted for any asset;
+    # 2. Sample data: the listing read, no record minted for any asset;
     # then the reader's records, as a custodian's book holds them.
-    runner("settings", "--instance", VENUE, "synthetic=true")
+    runner("settings", "--instance", VENUE, "sample_data=true")
     until(90, lambda: call(named["read_datasets"], {}, "read", "unchanged")["data"]
           ["products_listed"] >= 5, "step 2, the listing was not read")
     listed = runner("instruments")
@@ -335,24 +339,32 @@ def run():
 
     # 8. Parity: each read tool answers what its page shows.
     connection = call(named["read_connection"], {}, "read", "unchanged")["data"]
-    mode = "synthetic" if EXACT else "recorded"
-    must(connection["mode"] == mode and connection["venue"] == NAME
+    must(connection["mode"] == "Sample data" and connection["venue"] == NAME
+         and connection["credentials"] == [] and connection["entitled_at_vendor"]
          and connection["venue_held"] is False and connection["calls"] > 0,
          f"step 8, read_connection: {connection}")
     shown = page(VENUE, "admin", "/")
-    must(f"{mode.capitalize()}: answers from files" in shown and NAME in shown,
+    must("Sample data: the plugin answers from recorded responses" in shown
+         and "No key needed" in shown and NAME in shown,
          "step 8, the Connection page shows the same")
     served = call(named["read_datasets"], {}, "read", "unchanged")["data"]
-    must([d["dataset"] for d in served["datasets"]]
+    must([d["dataset"] for d in served["served"]]
          == [f"{VENUE}:daily", f"{VENUE}:live", f"{VENUE}:trades"]
          and served["products_mapped"] >= 3 and served["subjects_named"] == 3
-         and served["reads_instruments"] is True and served["recorded"] >= 2,
+         and served["reads_instruments"] is True
+         and sum(d["recorded"] for d in served["served"]) >= 2,
          f"step 8, read_datasets: {served}")
+    def licensed():
+        rows = call(named["read_datasets"], {}, "read", "unchanged")["data"]["served"]
+        return rows if all(d["licensed"] for d in rows) else None
+    until(90, licensed, "step 8, read_datasets did not say each dataset licensed")
     shown = page(VENUE, "admin", "/datasets")
+    must("Not licensed yet" not in shown and "Licensed" in shown,
+         "step 8, the Datasets page says each dataset licensed")
     must(f"{served['products_mapped']} of {served['products_listed']} products mapped" in shown,
          "step 8, the Datasets page shows the same")
     shown = page(VENUE, "admin", "/")
-    must("; opened " in shown or "Off: nothing stands to stream" in shown,
+    must(" on it; " in shown or "Nothing stands to stream." in shown,
          "step 8, the Connection page shows the stream's session")
 
     # 9. Raw responses kept, and the lake's record.
@@ -397,10 +409,29 @@ def run():
     must(any(line.startswith(f"miss|{VENUE}|") for line in lines),
          f"step 9, the venue's miss counted: {lines}")
 
+    # 10. A restart's gap (contract v20): USDC's latest live price, which
+    # nothing has recorded, stands as a want of the live dataset, putting
+    # USDC's dollar product on the stream; the plugin, restarted, hears it
+    # again and, before streaming, reads the last trade it recorded of each
+    # subject it streams from the lake (ListTrades, latest_recorded) and the
+    # venue's history after it, the call answered rather than refused.
+    def gaps():
+        said = compose("logs", "--no-color", VENUE).stdout
+        must("a restart's gap not read back" not in said, f"step 10, refused: {said[-800:]}")
+        return len(re.findall(r"a restart's gap read back: \d+ trades for \d+ subjects", said))
+    if usdc:
+        read(f"/prices?subject={usdc}&dataset={VENUE}:live")
+        until(90, lambda: call(named["read_connection"], {}, "read", "unchanged")["data"]
+              ["stream_state"] != "off", "step 10, nothing stood to stream")
+        before = until(60, gaps, "step 10, the gap was not read before the stream opened")
+        compose("restart", VENUE)
+        until(180, lambda: gaps() > before or None,
+              "step 10, the restarted plugin did not read its gap back")
+
     print(f"e2e OK in {int(time.time() - started)}s: on core's plugin harness, the catalogue's "
           "daily, live and trades datasets listed by the deployment admin's tool on the UTC day; "
           "the "
-          "listing read in synthetic mode with no record minted for any asset, and the venue "
+          "listing read with sample data, with no record minted for any asset, and the venue "
           "reported missing; the three datasets licensed and the reader entitled; a custodian's "
           "bitcoin, by its CAIP-19 and the custodian's symbol, read and named, and a day's "
           "closes wanted and recorded against the want, XXBTZUSD's in dollars and XBTUSDC's on "
@@ -411,8 +442,10 @@ def run():
           "connection dropped and opened again, the trades it missed read back from Trades, "
           "every trade recorded once with its aggressor, read over the day and after the "
           "watermark and heard, and each pair's latest quote with its sizes; read_connection "
-          "and read_datasets answering what the pages show; raw responses in storage; and "
-          "`store lake` numbering each dataset's rows with no holes, the wants and the miss")
+          "and read_datasets answering what the pages show, each dataset licensed; raw "
+          "responses in storage; and "
+          "`store lake` numbering each dataset's rows with no holes, the wants and the miss; "
+          "and restarted, its gap read back from the lake's last trade and the venue's history")
 
 
 def main():

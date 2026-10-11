@@ -25,7 +25,7 @@ reports each move before anything is removed; and what storage holds is said
 on every heartbeat (`plugin.stored`).
 
 Where the records live: `meridian.edge.storage_dir()` where the deployment
-grants the instance storage (a `dgm` is an edge role); otherwise a temporary
+grants the instance storage (a data plugin is an edge role); otherwise a temporary
 directory, which a restart loses.
 """
 
@@ -63,7 +63,7 @@ def storage_root() -> Path:
     granted = edge.storage_dir()
     if granted is not None:
         return granted
-    return Path(tempfile.mkdtemp(prefix="meridian-dgm-"))
+    return Path(tempfile.mkdtemp(prefix="meridian-data-"))
 
 
 def _safe(part: str) -> str:

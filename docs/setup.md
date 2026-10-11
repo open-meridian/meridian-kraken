@@ -2,7 +2,7 @@
 
 ## 1. Launch it
 
-Upload and launch the plugin as any other. It asks for the `dgm` role and
+Upload and launch the plugin as any other. It asks for the `data` role and
 storage for its raw responses, and no key.
 
 ## 2. License its datasets
@@ -39,8 +39,8 @@ An agent you delegate to can read the plugin's two pages through its tools
 (`read_connection`, `read_datasets`); the Data sources page has tools of its
 own for licences, entitlements and priority.
 
-## Synthetic mode
+## Sample data
 
-On a development deployment, the plugin's **Synthetic mode** setting makes it
+On a development deployment, the plugin's **Sample data** setting makes it
 answer from built-in synthetic responses instead of calling Kraken, to try
 it without reaching Kraken.

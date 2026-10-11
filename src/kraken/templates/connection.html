@@ -1,41 +1,20 @@
-{% extends "meridian/base.html" %}
-{% macro fact(label, value, mono=false) %}
-<tr><th scope="row">{{ label }}</th><td title="{{ value }}">{% if mono %}<code>{{ value }}</code>{% else %}{{ value }}{% endif %}</td>
-<td class="more"><details class="row-detail" name="connection"><summary aria-label="{{ label }} in full">…</summary><div class="row-detail-pop"><h3>{{ label }}</h3><p>{{ value }}</p></div></details></td></tr>
-{% endmacro %}
-{% macro stream_said(data) -%}
-{%- if data.stream_state == "off" -%}Off: nothing stands to stream
-{%- else -%}{{ data.stream_state|capitalize }}: {{ data.streaming }} {{ "product" if data.streaming == 1 else "products" }}; opened {{ data.stream_opened }}, dropped {{ data.stream_dropped }}; {{ data.stream_messages }} messages{% if data.last_message_at %}, the last at {{ data.last_message_at.strftime("%H:%M:%S UTC") }}{% endif %}{% if data.stream_error %}; last: {{ data.stream_error }}{% endif %}
-{%- endif -%}
-{%- endmacro %}
-{% block status %}
-{% if data.mode == "starting" %}
-<om-status data-om-header state="warn" label="Starting">Starting.</om-status>
-{% elif data.healthy %}
-<om-status data-om-header state="ok" label="{{ data.venue }} answers{% if data.mode != 'live' %} ({{ data.mode }}){% endif %}"{% if data.last_answer_at %} at="{{ data.last_answer_at.isoformat() }}" at-label="Last answer"{% endif %}>{{ data.venue }} answers.</om-status>
+{#- The data role's Connection (meridian/roles/data/connection.html), the
+    venue's nuance at its blocks only: under "Key", the venue master's ID
+    (the role's Venue row, for a source of one venue); under "Stream", the
+    session's state, with the products on it, its reconnects and messages,
+    and its last error where it has one. The endpoints are in the tool's
+    answer, kept off the page so it fits one screen. -#}
+{% extends "meridian/roles/data/connection.html" %}
+{% block vendor_rows %}
+{% import "meridian/roles/_rows.html" as om %}
+{% if section == "Key" %}
+{{ om.row("Venue", data.venue_id if data.venue_held else "Not held by the deployment", "" if data.venue_held else "Rows name the venue as reported.") }}
+{% elif section == "Stream" %}
+{% if data.stream_state == "off" %}
+{{ om.row("State", "Off", "Nothing stands to stream.") }}
 {% else %}
-<om-status data-om-header state="bad" label="{{ data.venue }} is not answering">{{ data.venue }} is not answering.</om-status>
+{{ om.row("State", data.stream_state|capitalize, data.streaming ~ (" product" if data.streaming == 1 else " products") ~ " on it; " ~ data.stream_dropped ~ (" reconnect, " if data.stream_dropped == 1 else " reconnects, ") ~ data.stream_messages ~ (" message" if data.stream_messages == 1 else " messages") ~ ((", the last at " ~ data.last_message_at) if data.last_message_at else "") ~ ".") }}
 {% endif %}
-{% endblock %}
-{% block content %}
-<section class="panel">
-<div class="panel-body">
-<h2>Connection</h2>
-<p class="muted">How this plugin reaches {{ data.venue }}'s public market data. No key: nothing to sign in to.</p>
-</div>
-<table class="one-line">
-<thead><tr><th>What</th><th>Now</th><th class="more"><span class="visually-hidden">Details</span></th></tr></thead>
-<tbody>
-{% if data.mode == "live" %}{{ fact("Mode", "Live: " ~ data.venue ~ " itself") }}{% else %}{{ fact("Mode", data.mode|capitalize ~ ": answers from files, nothing sent to " ~ data.venue) }}{% endif %}
-{% for endpoint in data.endpoints %}{{ fact(endpoint.name, endpoint.address ~ " (" ~ endpoint.what ~ ")") }}{% endfor %}
-{{ fact("Venue master", data.venue_id if data.venue_held else "Not held by the deployment: rows name the venue as reported", data.venue_held) }}
-{{ fact(data.venue ~ " allows", data.allowed) }}
-{{ fact("This plugin spends", data.spent) }}
-{{ fact("Calls", data.calls ~ " since it started; " ~ data.rate_limited ~ " rate-limited, " ~ data.failures ~ " failed") }}
-{{ fact("Last answer", data.last_answer_at.strftime("%Y-%m-%d %H:%M:%S UTC") if data.last_answer_at else "None yet") }}
-{{ fact("Stream", stream_said(data)) }}
-{{ fact("Last error", data.last_error or "None") }}
-</tbody>
-</table>
-</section>
+{% if data.stream_error %}{{ om.row("Last error", data.stream_error) }}{% endif %}
+{% endif %}
 {% endblock %}

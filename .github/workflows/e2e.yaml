@@ -1,8 +1,8 @@
 # The plugin proven against a released runtime, on every push and pull
-# request: `make e2e` runs it in synthetic mode, on the plugin harness the
+# request: `make e2e` runs it with sample data, on the plugin harness the
 # Makefile pins beside its runtime image, with the e2e's reader beside it
 # (e2e/run.py says each step). No secret: the images pull without a token,
-# and synthetic mode asks nothing of Kraken.
+# and sample data asks nothing of Kraken.
 #
 # The job is named for the make target that runs it locally: `make e2e`, part
 # of ci-local and so of the pre-push hook.

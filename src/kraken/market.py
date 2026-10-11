@@ -26,7 +26,7 @@ the values below, and `dgm.py` turns them into the lake's trades and quotes.
   book), with each side's size where the venue states it.
 - `Print`: one trade, its price, quantity and time, with the side the venue
   names and whose side it is -- the resting order's (Coinbase) or the one
-  that took liquidity (Kraken) -- so the dgm says which side took liquidity
+  that took liquidity (Kraken) -- so the plugin says which side took liquidity
   in the contract's words, never guessed where the venue names neither.
 - `Unread`: a value that did not read as a number, kept as sent.
 """

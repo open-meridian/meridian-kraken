@@ -1,4 +1,5 @@
-"""The `dgm`: the venue's market data into the lake, converted at the edge.
+"""The data plugin's work (the role `data`, contract v20): the venue's market
+data into the lake, converted at the edge.
 
 The same module in meridian-coinbase and meridian-kraken: what differs
 between the two venues is read in each plugin's `convert.py` into the values
@@ -13,7 +14,7 @@ subject and kind; and `trades`, every trade, apart from the live prices
 (contract v19).
 
 **Named before it is served** (W3.6, W3.1, W3.14; products.py): each subject
-the lake asks for is the deployment's record, read (a dgm's read from
+the lake asks for is the deployment's record, read (a data plugin's read from
 contract v18 as ruled 2026-10-10) and named as one of the venue's assets by
 its identifiers -- the venue's own code first, then the global identifier the
 venue states, then another source's symbol that is the venue's code -- never
@@ -75,6 +76,20 @@ trades since the last one recorded are read from the venue's REST history
 and recorded, so the lake has no gap and a reader catches up from it by the
 watermark it last saw. A want for a range of trades, or for a quote now, is
 answered from REST.
+
+**A restart's gap** (contract v20, W10.6; `meridian.roles.data.
+backfill_restart`): a restarted plugin hears each standing want again, and
+before a subject goes back on the stream, whose trades it records, the last
+trade this instance recorded of it is read from the lake
+(`list_trades(..., latest_recorded=True)`) and the trades the venue's REST
+history states after it are recorded, once per subject per process; a trade
+recorded again is answered unchanged by its row key. Where the history
+reaches back less far, the rest stays missing.
+
+**Its licences** (contract v20, W10.9): it reads its own declared datasets'
+licences from the deployment (`list_datasets`), on start and each minute,
+so its Datasets page says "Licensed" or "Not licensed yet" exactly; and it
+counts, per dataset, what it recorded and declined and when it last recorded.
 """
 
 from __future__ import annotations
@@ -102,6 +117,7 @@ from meridian import (
     TradeAttributes,
 )
 from meridian.plugin.v1 import operations_pb2 as ops
+from meridian.roles import data as role
 
 from .market import (
     MAKER,
@@ -190,6 +206,8 @@ class Counts:
     unread: int = 0
     declined: int = 0
     wants: int = 0
+    #: When it last recorded, 0 before it has.
+    last_ns: int = 0
 
 
 @dataclass
@@ -228,6 +246,15 @@ class Dgm:
     last_trade: dict[str, Print] = field(default_factory=dict)
     #: The products on the stream, by their names on it.
     streams: dict[str, Mapped] = field(default_factory=dict)
+    #: What it sent each of its datasets, by key, since it started.
+    by_dataset: dict[str, Counts] = field(default_factory=dict)
+    #: Its datasets a deployment admin has licensed, as rows name them, as
+    #: last read (contract v20); and whether the deployment answers that read.
+    licensed: frozenset[str] = frozenset()
+    reads_licences: bool = True
+    #: Subjects whose restart's gap has been read back from the venue's
+    #: history, once each per process.
+    backfilled: set[str] = field(default_factory=set)
     stream: Stream = field(init=False)
 
     def __post_init__(self) -> None:
@@ -266,6 +293,32 @@ class Dgm:
         self.stream.want([])  # nothing asked of the new source until named against its map
         self.stream.silent_seconds = self._silent(market)
         self.stream.retarget(market.stream_address, market.connect, market.subscriptions)
+
+    # ── Licences ─────────────────────────────────────────────────────────
+
+    async def read_licences(self) -> frozenset[str]:
+        """Its own declared datasets' licences (contract v20, W10.9): the
+        datasets a deployment admin has licensed, by the names rows give
+        them. A dataset with none is served by its catalogue's default terms
+        until one is set. A runtime from before v20 does not answer, which is
+        said once and leaves each "Not licensed yet"."""
+        if not self.reads_licences:
+            return self.licensed
+        try:
+            answered = await self.plugin.list_datasets()
+        except meridian.NotGranted:
+            log.warning("this data plugin may not read its datasets' licences")
+            self.reads_licences = False
+            return self.licensed
+        mine = {self.dataset(key) for key in (DAILY, LIVE, TRADES)}
+        self.licensed = frozenset(
+            licence.dataset for licence in answered.licences if licence.dataset in mine
+        )
+        return self.licensed
+
+    def sent_to(self, key: str) -> Counts:
+        """What it sent the dataset `key` since it started."""
+        return self.by_dataset.setdefault(key, Counts())
 
     # ── Resolving ────────────────────────────────────────────────────────
 
@@ -423,7 +476,7 @@ class Dgm:
                 instrument_id=subject, as_of_ns=self.clock_ns()
             )
         except meridian.NotGranted:
-            # A runtime from before the ruling of 2026-10-10 grants a dgm no
+            # A runtime from before the ruling of 2026-10-10 grants a data plugin no
             # read of what an instrument is (W3.6). Asked once, and said on
             # the Datasets page.
             log.warning("this dgm may not read an instrument's record; nothing is named")
@@ -653,17 +706,17 @@ class Dgm:
 
     # ── Recording ────────────────────────────────────────────────────────
 
-    async def _send(self, prices: list[Price], bars: list[Bar], want_id: str) -> int:
+    async def _send(self, prices: list[Price], bars: list[Bar], want_id: str, key: str) -> int:
         sent = 0
         for start in range(0, len(prices), BATCH):
             done = await self.plugin.record_prices(prices=prices[start : start + BATCH],
                                                    want_id=want_id)  # fmt: skip
-            self._count(done)
+            self._count(done, key)
             sent += len(prices[start : start + BATCH])
         for start in range(0, len(bars), BATCH):
             done = await self.plugin.record_bars(bars=bars[start : start + BATCH],
                                                  want_id=want_id)  # fmt: skip
-            self._count(done)
+            self._count(done, key)
             sent += len(bars[start : start + BATCH])
         return sent
 
@@ -671,16 +724,19 @@ class Dgm:
         for start in range(0, len(trades), BATCH):
             done = await self.plugin.record_trades(trades=trades[start : start + BATCH],
                                                    want_id=want_id)  # fmt: skip
-            self._count(done)
+            self._count(done, TRADES)
         for start in range(0, len(quotes), BATCH):
             done = await self.plugin.record_quotes(quotes=quotes[start : start + BATCH],
                                                    want_id=want_id)  # fmt: skip
-            self._count(done)
+            self._count(done, LIVE)
 
-    def _count(self, done: Any) -> None:
-        self.counts.recorded += int(getattr(done, "recorded", 0))
-        self.counts.restated += int(getattr(done, "restated", 0))
-        self.counts.unchanged += int(getattr(done, "unchanged", 0))
+    def _count(self, done: Any, key: str) -> None:
+        now = self.clock_ns()
+        for counted in (self.counts, self.sent_to(key)):
+            counted.recorded += int(getattr(done, "recorded", 0))
+            counted.restated += int(getattr(done, "restated", 0))
+            counted.unchanged += int(getattr(done, "unchanged", 0))
+            counted.last_ns = now
 
     async def _asked(self, call: Callable[..., Any], *args: Any) -> Any:
         """One question of the venue, off the loop: what it answered, or None
@@ -736,7 +792,7 @@ class Dgm:
                         found += 1
             if not found:
                 declined[subject] = "source_silent"
-        await self._send(prices, bars, want_id)
+        await self._send(prices, bars, want_id, DAILY)
         return declined
 
     async def record_live(
@@ -771,7 +827,7 @@ class Dgm:
                     self.counts.unread += len(best.unread) if best else 0
             if len(prices) == before:
                 declined[subject] = "source_silent"
-        await self._send(prices, [], want_id)
+        await self._send(prices, [], want_id, LIVE)
         return declined
 
     async def record_trades(
@@ -848,7 +904,59 @@ class Dgm:
             for products in self.products.for_subjects(subjects).values()
             for mapped in products
         }
+        await self.backfill(subjects)
         self.stream.want(sorted(self.streams))
+
+    async def backfill(self, subjects: Sequence[str]) -> int:
+        """A restart's gap (contract v20, W10.6): for each subject it streams
+        -- whose trades it records from the stream -- not read back yet in
+        this process, the last trade this instance recorded of it, from the
+        lake, and the trades the venue's history states after it, recorded.
+        Answers how many were sent; a refusal is said, and the stream goes
+        on."""
+        fresh = [s for s in subjects if s not in self.backfilled]
+        if not fresh:
+            return 0
+        self.backfilled.update(fresh)
+        try:
+            sent = await role.backfill_restart(_Counted(self), fresh, self._missed)
+        except (meridian.MeridianError, ValueError) as refused:
+            log.warning("a restart's gap not read back for %d subjects: %s", len(fresh), refused)
+            return 0
+        log.info("a restart's gap read back: %d trades for %d subjects", sent, len(fresh))
+        return sent
+
+    async def _missed(self, last: ops.Trade) -> list[Trade]:
+        """The trades the venue's history states after `last`, the last one
+        this instance recorded of a product, as the lake answered it: by the
+        venue's trade ID where it is a number, else by time. The product's
+        last trade becomes the newest read, so the stream does not send one
+        again."""
+        product, keyed, ident = last.meta.row_key.rpartition(":t:")
+        if not keyed or last.meta.source.dataset != self.dataset(TRADES):
+            return []
+        mapped = next((m for m in self.streams.values() if m.product == product), None)
+        if mapped is None:
+            return []
+        since = last.meta.valid_from_ns
+        missed: list[Trade] = []
+        for seen in await self._asked(self.market.trades, product, since) or []:
+            after = (
+                seen.sequence > int(ident)
+                if seen.sequence and ident.isdigit()
+                else (seen.at_ns > since)
+            )
+            if not after:
+                continue
+            row = self.trade(mapped, seen)
+            if row is None:
+                self.counts.unread += 1
+                continue
+            missed.append(row)
+            held = self.last_trade.get(product)
+            if held is None or seen.sequence > held.sequence or seen.at_ns > held.at_ns:
+                self.last_trade[product] = seen
+        return missed
 
     def _hear_trade(self, mapped: Mapped, seen: Print) -> None:
         last = self.last_trade.get(mapped.product)
@@ -919,7 +1027,7 @@ class Dgm:
 
     # ── Wants ────────────────────────────────────────────────────────────
 
-    async def _decline(self, want_id: str, declined: dict[str, str]) -> None:
+    async def _decline(self, want_id: str, declined: dict[str, str], key: str) -> None:
         by_reason: dict[str, list[str]] = {}
         for subject, reason in declined.items():
             by_reason.setdefault(reason, []).append(subject)
@@ -930,6 +1038,7 @@ class Dgm:
                 reason=reason,
             )
             self.counts.declined += len(subjects)
+            self.sent_to(key).declined += len(subjects)
 
     async def on_want(self, heard: meridian.Heard[ops.ObservationsWantedEvent]) -> None:
         """Record what the lake wants, or decline it per subject."""
@@ -948,7 +1057,7 @@ class Dgm:
         except Exception as failed:  # noqa: BLE001 - the venue or the lake refused; said, not raised
             log.warning("want %s not answered: %s", want.want_id, failed)
             declined = {s: "source_silent" for s in subjects}
-        await self._decline(want.want_id, declined)
+        await self._decline(want.want_id, declined, key)
         after = self.counts.recorded + self.counts.restated + self.counts.unchanged
         self.heard.appendleft(
             Heard(want.want_id, want.dataset, asked, len(subjects), after - before,
@@ -1065,6 +1174,22 @@ def _grouped(wants: Iterable[Standing]) -> list[tuple[list[str], tuple[int, ...]
     for want in wants:
         by_kinds.setdefault(tuple(sorted(want.kinds)), set()).update(want.subjects)
     return [(sorted(subjects), kinds) for kinds, subjects in sorted(by_kinds.items())]
+
+
+@dataclass
+class _Counted:
+    """The plugin's two operations a restart's backfill uses, its trades
+    counted as recorded to the trades dataset."""
+
+    dgm: Dgm
+
+    async def list_trades(self, **asked: Any) -> Any:
+        return await self.dgm.plugin.list_trades(**asked)
+
+    async def record_trades(self, **sent: Any) -> Any:
+        done = await self.dgm.plugin.record_trades(**sent)
+        self.dgm._count(done, TRADES)
+        return done
 
 
 async def cancelled(task: asyncio.Task[Any]) -> None:
