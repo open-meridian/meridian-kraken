@@ -280,6 +280,11 @@ class Market(Protocol):
 
     #: The venue's code as a `symbol`'s source (`coinbase`, `kraken`).
     venue: str
+    #: The identifiers the venue is known by in the venue master, each
+    #: (scheme, value, source): neither venue has a MIC, so its own code, as a
+    #: symbol whose source is the venue, which the platform's curation adds
+    #: to its record.
+    venue_identifiers: tuple[tuple[str, str, str], ...]
     #: The venue's name, as people know it.
     name: str
     session: Session

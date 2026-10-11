@@ -93,6 +93,9 @@ from .venue import (
 )
 
 VENUE = "kraken"
+#: Kraken in the venue master: no MIC, so its own code, as a symbol whose
+#: source is Kraken, which the platform's curation adds to its record.
+VENUE_IDENTIFIERS: tuple[tuple[str, str, str], ...] = (("symbol", "kraken", "kraken"),)
 NAME = "Kraken"
 
 #: Native coins by SLIP-44 coin type, keyed by Kraken's asset code.
@@ -355,6 +358,7 @@ class KrakenMarket:
     """Kraken's market data, as the shared dgm asks for it."""
 
     venue = VENUE
+    venue_identifiers = VENUE_IDENTIFIERS
     name = NAME
 
     def __init__(self, client: Kraken, mode: str = "live") -> None:

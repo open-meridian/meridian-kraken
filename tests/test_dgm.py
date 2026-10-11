@@ -185,9 +185,11 @@ async def test_a_venue_held_is_named_by_its_id_on_every_row(lake: Lake) -> None:
     btc = await lake.held(dgm, venue.BASE)
     await dgm.record_days([btc], venue.CLOSED, venue.CLOSED)
     [asked] = lake.on("ResolveVenue")
-    assert [(i.scheme, i.value, i.source) for i in asked.identifiers] == [
-        ("symbol", venue.VENUE, venue.VENUE)
-    ]
+    assert (
+        [(i.scheme, i.value, i.source) for i in asked.identifiers]
+        == [("symbol", venue.VENUE, venue.VENUE)]
+        == list(dgm.market.venue_identifiers)
+    ), "the venue's own code, as its convert.py declares"
     assert {r.meta.source.venue_id for r in lake.rows()} == {dgm.venue.venue_id}
     assert dgm.venue.venue_id.startswith("VEN-")
 

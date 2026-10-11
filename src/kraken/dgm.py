@@ -269,14 +269,21 @@ class Dgm:
 
     # ── Resolving ────────────────────────────────────────────────────────
 
+    def venue_identifiers(self) -> list[ops.Identifier]:
+        """The identifiers the venue is known by in the venue master, as the
+        venue's convert.py declares them."""
+        return [
+            meridian.Identifier(scheme=scheme, value=value, source=source)
+            for scheme, value, source in self.market.venue_identifiers
+        ]
+
     async def venue_id(self) -> str:
-        """The venue master's ID for the venue, asked once per mapping by its
-        code with the venue as source; a venue not held is reported once and
-        left empty."""
+        """The venue master's ID for the venue, asked once per mapping by the
+        identifiers it is known by; a venue not held is reported once and left
+        empty."""
         if self.venue.asked:
             return self.venue.venue_id
-        named = [meridian.Identifier(scheme="symbol", value=self.market.venue,
-                                     source=self.market.venue)]  # fmt: skip
+        named = self.venue_identifiers()
         now = self.clock_ns()
         found = await self.plugin.resolve_venue(identifiers=named, as_of_ns=now)
         self.venue.asked = True

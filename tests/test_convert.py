@@ -182,3 +182,7 @@ async def test_a_synthetic_connection_drops_but_the_last_is_held_open(tmp_path: 
     market = _market(tmp_path)
     first, last = await market.connect(""), await market.connect("")
     assert (first.hold, last.hold) == (False, True)  # type: ignore[attr-defined]
+
+
+def test_the_venue_is_known_by_its_own_code_having_no_mic() -> None:
+    assert convert.VENUE_IDENTIFIERS == (("symbol", "kraken", "kraken"),)

@@ -48,7 +48,7 @@ a deployment admin approves it.
   Kraken's own instrument, by its code alone, since Kraken states no network
   or contract for any), reporting what does not resolve
   (`report_missing_instrument`), once; resolve the venue by its
-  code (`resolve_venue`, `symbol` `kraken` at `kraken`: Kraken has no MIC), and where the deployment does not hold it leave each row's
+  code (`resolve_venue`, by `convert.VENUE_IDENTIFIERS`: `symbol` `kraken` at `kraken`, Kraken having no MIC), and where the deployment does not hold it leave each row's
   `venue_id` empty with the code beside it as reported. A price in a
   currency names it by its ISO 4217 code; a price in any token -- USDT,
   USDC -- names the token's own instrument (`Money(amount,
