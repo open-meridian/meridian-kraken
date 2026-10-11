@@ -145,6 +145,11 @@ class Recorded:
                 if record.get("call") == "stream":
                     heard.append((int(record["received_at_ns"]), str(record["body"])))
                     continue
+                if "call" not in record and "text" in record and "received_at_ns" in record:
+                    # A stream message as the recorder of 2026-10-03 kept it,
+                    # before the stream's raw records: its text and arrival.
+                    heard.append((int(record["received_at_ns"]), str(record["text"])))
+                    continue
                 try:
                     body = json.loads(str(record["body"]), parse_float=Decimal)
                 except (KeyError, ValueError):

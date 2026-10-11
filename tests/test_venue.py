@@ -4,6 +4,7 @@ as Kraken does."""
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -135,3 +136,13 @@ def test_a_recording_replays_its_stream_and_its_trades(tmp_path: Path) -> None:
     trades = result_for(_client(tmp_path / "replayed", replay).trades("XXBTZUSD").value,
                         "XXBTZUSD")  # fmt: skip
     assert [str(t[6]) for t in trades][-1] == "110938306"
+
+
+def test_a_stream_line_as_the_first_recorder_kept_it_is_replayed(tmp_path: Path) -> None:
+    # The recordings of 2026-10-03 keep each stream message as its text and
+    # when it arrived, before the stream's raw records named their call.
+    trade = '{"channel":"trade","type":"update","data":[]}'
+    lines = [{"received_at_ns": 2, "text": trade}, {"received_at_ns": 1, "text": "first"}]
+    (tmp_path / "stream").mkdir()
+    (tmp_path / "stream" / "1.jsonl").write_text("\n".join(json.dumps(x) for x in lines))
+    assert Recorded(tmp_path).stream_sessions() == [["first", trade]]
