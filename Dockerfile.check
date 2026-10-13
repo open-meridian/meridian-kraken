@@ -24,17 +24,24 @@ COPY tests tests
 # Run by `make test` and `make preview` with `docker run`.
 FROM base AS test
 
+# A meridian built locally, where `make` is given one (MERIDIAN_BIN): a
+# directory holding the binary of a release not yet published, being tried,
+# as SDK_REPO is for the SDK. Empty, check.yaml's release is installed.
+FROM scratch AS cli
+
 # meridian, as check.yaml installs it: its own installer, from the release's
 # tag, which checks the binary against the checksum published beside it. A
 # stage of its own, so a change to the plugin does not download it again.
 FROM python:${PYTHON_VERSION}-slim AS meridian
 ARG MERIDIAN_VERSION
-RUN test -n "${MERIDIAN_VERSION}" \
- && apt-get update \
+RUN --mount=type=bind,from=cli,target=/cli \
+    test -n "${MERIDIAN_VERSION}" \
+ && if [ -x /cli/meridian ]; then cp /cli/meridian /usr/local/bin/meridian; else \
+    apt-get update \
  && apt-get install -y --no-install-recommends curl \
  && rm -rf /var/lib/apt/lists/* \
  && curl -fsSL "https://raw.githubusercontent.com/open-meridian/meridian-cli/v${MERIDIAN_VERSION}/install.sh" \
-    | MERIDIAN_VERSION="${MERIDIAN_VERSION}" MERIDIAN_INSTALL_DIR=/usr/local/bin sh \
+    | MERIDIAN_VERSION="${MERIDIAN_VERSION}" MERIDIAN_INSTALL_DIR=/usr/local/bin sh; fi \
  && /usr/local/bin/meridian --version
 
 # Run by `make check` with `docker run`, the repository mounted over /w:

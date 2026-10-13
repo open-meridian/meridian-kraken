@@ -156,6 +156,10 @@ NOT_PRESENTED = {
     "a-condition-converted": "Kraken states no condition codes: a crypto trade is regular",
     "a-condition-not-converted": "Kraken states no condition codes: none to leave unconverted",
     "a-trade-withdrawn": "Kraken's feed never withdraws a trade it has stated",
+    "reads-a-calendar": "a crypto venue trading 24/7: it reads no settlement calendar",
+    "asks-for-a-settlement-date": (
+        "records prices, bars and trades as Kraken publishes them; never computes a settlement date"
+    ),
 }
 #: A restart's gap (contract v20): the last trade the lake holds of BASE's
 #: dollar pair, by its pair, trade ID and time; and the trades the venue's

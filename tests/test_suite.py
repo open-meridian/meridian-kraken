@@ -16,9 +16,12 @@ and the plugin reads its own datasets' licences.
 
 A case about something the venue never states -- an FX rate where it lists
 no product between two currencies, a trade's condition codes, a withdrawn
-trade, the side it does not name, the resting order's or the taker's -- is
+trade, the side it does not name, the resting order's or the taker's, a
+settlement calendar or date a venue trading 24/7 never needs (contract
+v22) -- is
 named in venue_cases.NOT_PRESENTED with why, and the runner holds it to
-being a case about a kind of data (`about`, contract v19) or a field
+being a case about a kind of data (`about`, contract v19; calendars and
+settlement dates from v22) or a field
 (`about_field`, contract v20); every other case is mapped (README, "What it
 cannot serve").
 """
@@ -233,8 +236,8 @@ def producers(**mutations: Any) -> dict[str, Producer]:
     return {case: produce for case, produce in made.items() if case not in NOT_PRESENTED}
 
 
-def test_the_suite_has_the_twenty_four_cases_this_file_maps() -> None:
-    assert len(list(names("data"))) == 24
+def test_the_suite_has_the_twenty_six_cases_this_file_maps() -> None:
+    assert len(list(names("data"))) == 26
     assert set(names("data")) == set(producers()) | set(NOT_PRESENTED)
     assert not set(producers()) & set(NOT_PRESENTED)
 
@@ -242,7 +245,7 @@ def test_the_suite_has_the_twenty_four_cases_this_file_maps() -> None:
 def test_every_case_the_venue_presents_passes_unchanged() -> None:
     report = run("data", producers(), not_presented=NOT_PRESENTED, instance_id=venue.VENUE)
     assert report.passed, report.failures
-    assert len(report.passed_cases) == 24 - len(NOT_PRESENTED)
+    assert len(report.passed_cases) == 26 - len(NOT_PRESENTED)
 
 
 def test_a_candle_read_through_a_float_fails_the_suite() -> None:
@@ -273,6 +276,7 @@ def test_a_case_not_presented_is_said_with_why() -> None:
     assert set(NOT_PRESENTED) <= {
         "an-fx-rate", "a-condition-converted", "a-condition-not-converted",
         "a-trade-withdrawn", "the-makers-side-inverted", "the-takers-side-stated",
+        "reads-a-calendar", "asks-for-a-settlement-date",
     }, "only a case the venue cannot present"  # fmt: skip
     sides = {"the-makers-side-inverted", "the-takers-side-stated"}
     assert len(sides & set(NOT_PRESENTED)) == 1, "the venue names one side or the other"
