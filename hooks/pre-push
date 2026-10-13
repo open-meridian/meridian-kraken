@@ -1,19 +1,30 @@
 #!/usr/bin/env bash
-# Pre-push gate. Local green is the completion signal; CI is confirmation.
+# Pre-push gate for a plugin: CI-first (ruled 2026-10-13).
+#
+# A plugin's change lands through a pull request: push a branch, open the pull
+# request, and its CI (ci, check, e2e) is the first line; merge when green.
+# Pushing a branch therefore runs nothing here. `make ci-local` stays the way
+# to reproduce or debug a CI failure locally.
+#
+# A push straight to main skips the pull request, so it still runs the local
+# gate first, promoted to ci-local-deep for a diff touching build inputs,
+# workflow definitions or the wire schema.
 #
 # Activate on a fresh clone with:  make install-hooks
-# (sets core.hooksPath=hooks, so this actually fires)
-#
-# Two tiers, promoted automatically. A diff touching build inputs, workflow
-# definitions or the wire schema gets the deep gate, because those are the
-# paths ci-local cannot fully cover by construction. Here ci-local-deep is
-# ci-local, and the promotion is kept so the two tiers read as they do in
-# every other Open Meridian repository.
-#
 # --no-verify bypasses this. It is not recommended and settings.json denies it
 # to agent sessions.
 
 set -euo pipefail
+
+to_main=""
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+  [ "$remote_ref" = "refs/heads/main" ] && to_main=1
+done
+
+if [ -z "$to_main" ]; then
+  echo "pre-push: a branch push; CI on its pull request is the gate (CI-first)."
+  exit 0
+fi
 
 RISKY='(^|/)(Dockerfile[^/]*|Makefile|pyproject\.toml|\.github/workflows/)'
 
@@ -33,10 +44,10 @@ if echo "$changed" | grep -qE "$RISKY"; then
   echo "pre-push: diff touches a risky path, promoting to $target"
 fi
 
-echo "pre-push: running make $target"
+echo "pre-push: a push straight to main; running make $target"
 if ! make "$target"; then
   echo
   echo "pre-push: BLOCKED -- make $target failed."
-  echo "Fix it locally. Pushing red turns CI into a remote debugger."
+  echo "Land it through a pull request instead, or fix it locally."
   exit 1
 fi
