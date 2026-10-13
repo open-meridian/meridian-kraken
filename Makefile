@@ -27,6 +27,11 @@ PLUGIN_CHECK := meridian-$(PLUGIN)-plugin-check
 # The meridian check.yaml holds the plugin to, read from there so the two
 # cannot drift.
 MERIDIAN_VERSION := $(shell sed -n 's/^ *MERIDIAN_VERSION: *\([0-9][0-9.]*\).*/\1/p' .github/workflows/check.yaml)
+# A meridian built locally (a directory holding its binary), for a release
+# not yet published: `make check MERIDIAN_BIN=../cli-build`. Empty, the
+# release check.yaml pins is installed.
+MERIDIAN_BIN ?=
+CLI_CONTEXT := $(if $(MERIDIAN_BIN),--build-context cli=$(MERIDIAN_BIN),)
 
 # The released runtime `make e2e` proves the plugin against, by tag and digest,
 # and core's plugin harness published with it, by the same commit's tag and
@@ -103,10 +108,10 @@ test:
 check:
 	@[ -n "$(MERIDIAN_VERSION)" ] \
 		|| { echo "check FAILED: .github/workflows/check.yaml pins no MERIDIAN_VERSION" >&2; exit 1; }
-	@$(DOCKER) build $(SDK_CONTEXT) -f Dockerfile.check --target check --build-arg MERIDIAN_VERSION=$(MERIDIAN_VERSION) \
+	@$(DOCKER) build $(SDK_CONTEXT) -f Dockerfile.check --target check $(CLI_CONTEXT) --build-arg MERIDIAN_VERSION=$(MERIDIAN_VERSION) \
 		-t $(PLUGIN_CHECK) . >/dev/null 2>&1 \
 		|| { echo "check FAILED to build; see it with:" >&2; \
-		     echo "  DOCKER_BUILDKIT=1 docker build $(SDK_CONTEXT) -f Dockerfile.check --target check --build-arg MERIDIAN_VERSION=$(MERIDIAN_VERSION) --progress=plain ." >&2; exit 1; }
+		     echo "  DOCKER_BUILDKIT=1 docker build $(SDK_CONTEXT) -f Dockerfile.check --target check $(CLI_CONTEXT) --build-arg MERIDIAN_VERSION=$(MERIDIAN_VERSION) --progress=plain ." >&2; exit 1; }
 	@out="$$(docker run --rm -v "$(CURDIR)":/w:ro $(PLUGIN_CHECK) meridian plugin check --verified --run-tests 2>&1)" \
 		|| { echo "check FAILED:" >&2; echo "$$out" >&2; exit 1; }
 	@echo "check OK: meridian $(MERIDIAN_VERSION) plugin check --verified --run-tests, every rule holds"

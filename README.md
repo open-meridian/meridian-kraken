@@ -13,7 +13,7 @@ It is the second half of the lake's crypto pair, with
 pass one data suite unchanged between them (meridian-design
 `plans/the-lake-prices-the-book.md`, rows 6 and 19).
 
-**Status.** 0.4.0, built on open-meridian 0.25.0 (contract v21), holding the
+**Status.** 0.5.0, built on open-meridian 0.26.0 (contract v22), holding the
 role `data`. Not
 released, uploaded or launched anywhere.
 
@@ -143,15 +143,17 @@ Three datasets, declared from code in its catalogue (`declaration.py`):
   Decimal): the row is left unrecorded and counted on the Datasets page, its
   raw record kept. The SDK's `Price` carries no price left not known.
 - **What the suite asks and Kraken never states.** Of the SDK's data
-  suite's 24 cases (contract v20), four are not presented, each named with
+  suite's 26 cases (contract v22), six are not presented, each named with
   why in `tests/venue_cases.py`, as the suite allows of a case about a kind
   of data (`about`) or a field its source never states (`about_field`,
   contract v20): `the-makers-side-inverted` (Kraken names the side that
   took liquidity, never the resting order's; Coinbase presents it),
   `a-condition-converted` and `a-condition-not-converted` (Kraken states no
   condition codes: a crypto trade is regular), and `a-trade-withdrawn`
-  (Kraken's feed never withdraws a trade it has stated). The other 20 pass
-  unchanged, `the-takers-side-stated` among them.
+  (Kraken's feed never withdraws a trade it has stated), and contract v22's
+  `reads-a-calendar` and `asks-for-a-settlement-date` (a venue trading
+  24/7: it reads no settlement calendar and never computes a settlement
+  date). The other 20 pass unchanged, `the-takers-side-stated` among them.
 
 ## Kraken's terms
 
