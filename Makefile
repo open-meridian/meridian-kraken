@@ -35,12 +35,12 @@ CLI_CONTEXT := $(if $(MERIDIAN_BIN),--build-context cli=$(MERIDIAN_BIN),)
 
 # The released runtime `make e2e` proves the plugin against, by tag and digest,
 # and core's plugin harness published with it, by the same commit's tag and
-# its digest: core main 6202b4a, contract v21. Moved together by a deliberate commit, and with the SDK when a
+# its digest: core 8f03d84, contract v22, by tag for now (its digest at push time). Moved together by a deliberate commit, and with the SDK when a
 # contract version changes.
 # `make e2e RUNTIME_IMAGE=...:latest HARNESS_IMAGE=...:latest` tries a newer
 # core; e2e-latest.yaml does that weekly.
-RUNTIME_IMAGE ?= ghcr.io/open-meridian/meridian-runtime:6202b4a@sha256:854d866396de5f2f0c39b0ad3b1bd8b283f1549bb86d9684db71283988821012
-HARNESS_IMAGE ?= ghcr.io/open-meridian/meridian-harness:6202b4a@sha256:f8346eadc65a5194331af2ee277dddbbdc6bcbeeca7ac196cb7ac7990bed8090
+RUNTIME_IMAGE ?= ghcr.io/open-meridian/meridian-runtime:8f03d84
+HARNESS_IMAGE ?= ghcr.io/open-meridian/meridian-harness:8f03d84
 # Its roles as pyproject.toml declares them (a JSON list's items), so the
 # harness launches it as `meridian plugin upload` would; and the e2e's reader
 # (e2e/reader.py) beside it, holding `custody` beside `reporting` to resolve
