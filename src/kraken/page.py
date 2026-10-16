@@ -50,7 +50,7 @@ from meridian.v1 import sidecar_pb2
 
 from .convert import ENTITLED as ENTITLED
 from .convert import NAME, VENUE
-from .declaration import CATALOGUE
+from .declared import CATALOGUE
 from .dgm import DAILY, LIVE, TRADES, Dgm
 
 TITLE = NAME

@@ -13,7 +13,7 @@ It is the second half of the lake's crypto pair, with
 pass one data suite unchanged between them (meridian-design
 `plans/the-lake-prices-the-book.md`, rows 6 and 19).
 
-**Status.** 0.5.0, built on open-meridian 0.26.0 (contract v22), holding the
+**Status.** 0.6.0, built on open-meridian 0.29.0 (contract v25: its whole declaration, and docs/, which a deployment shows on its Documentation tab), holding the
 role `data`. Not
 released, uploaded or launched anywhere.
 

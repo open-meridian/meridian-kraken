@@ -28,9 +28,10 @@ import meridian
 
 from . import raw
 from .convert import KrakenMarket
-from .declaration import DECLARATION, SAMPLE_DATA
+from .declaration import DECLARATION, PORT
+from .declared import SAMPLE_DATA
 from .dgm import Dgm, cancelled
-from .page import TITLE, figures_now, hold, pages
+from .page import figures_now, hold, pages
 from .products import ProductMap
 from .raw import RawStore, storage_root, tend
 from .synthetic import Recorded, Synthetic
@@ -150,12 +151,11 @@ async def run() -> None:
     for stop in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(stop, stopped.set)
 
-    port = int(os.environ.get("KRAKEN_PAGE_PORT", "8000"))
-    async with await meridian.connect(
-        interface=meridian.Interface(port=port, title=TITLE, pages=pages),
-        declaration=DECLARATION,
-        settings=DECLARATION.settings,
-    ) as plugin:
+    port = PORT
+    # The version's whole declaration (declaration.py): its settings, its
+    # pages with the levels each serves and their tools, and its documentation.
+    # A version registers exactly what it was uploaded with (contract v25).
+    async with await meridian.connect(declaration=DECLARATION) as plugin:
         log.info("registered as %s, roles %s", plugin.identity.instance_id, plugin.identity.roles)
         store = RawStore(storage_root())
         chosen = market(store, synthetic=False)

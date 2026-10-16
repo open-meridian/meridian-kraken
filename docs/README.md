@@ -1,12 +1,20 @@
-# The Kraken plugin's documentation
+# Kraken plugin: its documentation
 
-A draft, for a deployment admin who adds Kraken's market data to a
-deployment. It is written ahead of the plugin-documentation revision, which
-will say where a plugin's documentation is published; until then it lives
-here, beside the code.
+What this plugin's vendor says about it, for the people who set it up and use
+it. Each version ships these sections with its upload, named by digest in its
+declaration, and a deployment shows them on the plugin's **Documentation**
+tab, beside a Reference drawn from what the version declares.
 
-- [Overview](overview.md): what the plugin does, and what it never does.
-- [Setup](setup.md): launching it, licensing and entitling its datasets.
-- [Pages](pages.md): Connection and Datasets, and their tools for agents.
-- [Terms](terms.md): Kraken's terms, summarised, and your due diligence.
-- [Troubleshooting](troubleshooting.md): what each thing you might see means.
+| Section | For |
+|---|---|
+| [Overview](overview.md) | What it does, what it records, and what it never does |
+| [Setup](setup.md) | What to arrange first, and the steps after launching |
+| [Pages](pages.md) | Each page, who opens it and what it is for |
+| [Troubleshooting](troubleshooting.md) | What each state means, and what to do |
+| [Terms](terms.md) | The vendor's terms summarised, your due diligence, the licence |
+
+This file is the repository's own index: it is not uploaded.
+
+**No reference here.** The plugin's roles, settings, pages, tools and storage
+are listed on the Documentation tab's Reference, drawn from the version's own
+declaration, so they always match the version you run.

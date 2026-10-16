@@ -170,7 +170,7 @@ e2e-run:
 	@# The harness is taken down, and its copy removed, however the run ends:
 	@# `meridian plugin check` reads every source file under this directory.
 	@trap '$(E2E) $(E2E_FILES) logs --no-color >.e2e/components.log 2>&1; \
-		$(E2E) $(E2E_FILES) down -v --remove-orphans >>.e2e/components.log 2>&1; rm -rf .e2e/harness' EXIT; \
+		$(E2E) $(E2E_FILES) --profile runner down -v --remove-orphans >>.e2e/components.log 2>&1; rm -rf .e2e/harness' EXIT; \
 	id="$$(docker create $(HARNESS_IMAGE) none 2>>.e2e/components.log)" \
 		&& docker cp "$$id:/harness" .e2e/harness >/dev/null \
 		&& docker rm "$$id" >/dev/null \
