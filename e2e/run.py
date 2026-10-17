@@ -43,9 +43,10 @@ harness (contracts v18 to v20), with sample data, beside a reader
 9. Its raw responses are in its granted storage, and `store lake` prints
    each row kept, numbered with no holes in each dataset, the wants asked,
    answered, declined and withdrawn, and the venue's miss.
-10. A restart's gap (contract v20): with BTC's products on the stream again,
+10. A restart's gap (contract v20): with BTC's products on the stream still,
    the plugin restarted reads the last trade it recorded of each subject from
-   the lake (ListTrades, latest_recorded) and the venue's history after it.
+   the lake (ListTrades, latest_recorded) and the venue's history after it;
+   run after step 8 and before step 9 waits for the live want's withdrawal.
 
 Run from the repository's root by the Makefile, which builds the image,
 copies the harness out and writes the plugins' compose file first, and
@@ -194,7 +195,7 @@ def run():
     # 1. The catalogue, as the deployment admin's tool lists it.
     def datasets():
         held = {d["dataset"]: d for d in
-                call("dashboard__list_datasets", {}, "read")["data"]["datasets"]}
+                call("dashboard__list_datasets", {}, "read", "unchanged")["data"]["datasets"]}
         return held if {f"{VENUE}:{k}" for k in ("daily", "live", "trades")} <= set(held) else None
     held = until(90, datasets, "step 1, the three datasets were not listed")
     for key, modes in (("daily", ["pull", "push"]), ("live", ["pull", "stream"]),
@@ -380,6 +381,29 @@ def run():
     must(" on it; " in shown or "Nothing stands to stream." in shown,
          "step 8, the Connection page shows the stream's session")
 
+    # 10. A restart's gap (contract v20), while bitcoin's pairs stand to
+    # stream under the wants above: the plugin, restarted, hears them again
+    # (the lake delivers a standing want again each minute) and, before
+    # streaming, reads the last trade it recorded of each subject it streams
+    # from the lake (ListTrades, latest_recorded) and the venue's history
+    # after it, the call answered rather than refused. Run here, before step
+    # 9 waits for the live want's withdrawal: until contract v24 it ran last,
+    # standing a want of USDC's latest live price, which nothing had
+    # recorded; from v24 the lake never wants a provisional record (W10.6,
+    # W10.7), and Kraken's USDC, named by its code alone as Kraken's own
+    # instrument, is the deployment's provisional record, so nothing would
+    # stand to stream. Bitcoin's rows held, a read of it asks nothing again.
+    def gaps():
+        said = compose("logs", "--no-color", VENUE).stdout
+        must("a restart's gap not read back" not in said, f"step 10, refused: {said[-800:]}")
+        return len(re.findall(r"a restart's gap read back: \d+ trades for \d+ subjects", said))
+    until(90, lambda: call(named["read_connection"], {}, "read", "unchanged")["data"]
+          ["stream_state"] != "off", "step 10, nothing stood to stream")
+    before = until(60, gaps, "step 10, the gap was not read before the stream opened")
+    compose("restart", VENUE)
+    until(180, lambda: gaps() > before or None,
+          "step 10, the restarted plugin did not read its gap back")
+
     # 9. Raw responses kept, and the lake's record.
     kept = compose("exec", "-T", VENUE, "python", "-c",
                    "from meridian import edge; "
@@ -423,25 +447,6 @@ def run():
          f"step 9, the quotes kept in the live dataset: {lines}")
     must(any(line.startswith(f"miss|{VENUE}|") for line in lines),
          f"step 9, the venue's miss counted: {lines}")
-
-    # 10. A restart's gap (contract v20): USDC's latest live price, which
-    # nothing has recorded, stands as a want of the live dataset, putting
-    # USDC's dollar product on the stream; the plugin, restarted, hears it
-    # again and, before streaming, reads the last trade it recorded of each
-    # subject it streams from the lake (ListTrades, latest_recorded) and the
-    # venue's history after it, the call answered rather than refused.
-    def gaps():
-        said = compose("logs", "--no-color", VENUE).stdout
-        must("a restart's gap not read back" not in said, f"step 10, refused: {said[-800:]}")
-        return len(re.findall(r"a restart's gap read back: \d+ trades for \d+ subjects", said))
-    if usdc:
-        read(f"/prices?subject={usdc}&dataset={VENUE}:live")
-        until(90, lambda: call(named["read_connection"], {}, "read", "unchanged")["data"]
-              ["stream_state"] != "off", "step 10, nothing stood to stream")
-        before = until(60, gaps, "step 10, the gap was not read before the stream opened")
-        compose("restart", VENUE)
-        until(180, lambda: gaps() > before or None,
-              "step 10, the restarted plugin did not read its gap back")
 
     print(f"e2e OK in {int(time.time() - started)}s: on core's plugin harness, the catalogue's "
           "daily, live and trades datasets listed by the deployment admin's tool on the UTC day; "

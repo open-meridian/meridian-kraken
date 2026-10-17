@@ -47,6 +47,9 @@ ASKED = {
     "usd": [ops.Identifier(scheme="iso4217", value="USD")],
     "eur": [ops.Identifier(scheme="iso4217", value="EUR")],
 }
+#: What a custodian's statement states beside an identifier (contract v24,
+#: W3.7): a description and a currency, the minimum a record is minted from.
+STATED = {"btc": ("Bitcoin", "USD")}
 
 
 def trade_json(trade, caught_up=False):
@@ -117,7 +120,12 @@ class Reader:
     async def resolve(self):
         for name, identifiers in ASKED.items():
             if name not in self.ids:
-                found = await self.plugin.resolve_identifier(identifiers=identifiers)
+                description, currency = STATED.get(name, ("", ""))
+                found = await self.plugin.resolve_identifier(
+                    identifiers=identifiers,
+                    stated_description=description,
+                    stated_currency=currency,
+                )
                 if not found.instrument_id:
                     raise RuntimeError(f"{name} did not resolve: {found}")
                 self.ids[name] = found.instrument_id
