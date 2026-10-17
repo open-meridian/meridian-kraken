@@ -39,10 +39,9 @@ CLI_CONTEXT := $(if $(MERIDIAN_BIN),--build-context cli=$(MERIDIAN_BIN),)
 # contract version changes.
 # `make e2e RUNTIME_IMAGE=...:latest HARNESS_IMAGE=...:latest` tries a newer
 # core; e2e-latest.yaml does that weekly.
-# PLACEHOLDER (v25): core v25's runtime and harness are not published yet; re-pin both
-# by tag and digest to what core's v25 merge publishes before this merges.
-RUNTIME_IMAGE ?= ghcr.io/open-meridian/meridian-runtime:CORE-V25-PLACEHOLDER
-HARNESS_IMAGE ?= ghcr.io/open-meridian/meridian-harness:CORE-V25-PLACEHOLDER
+# Core abf028f (merged as fc3f0d1), contract v25, as published with chart 0.1.306.
+RUNTIME_IMAGE ?= ghcr.io/open-meridian/meridian-runtime:abf028f@sha256:67c765c3c8234d942fa18b95a2d18cbc96358853ed27a730a2f057a15625d3c9
+HARNESS_IMAGE ?= ghcr.io/open-meridian/meridian-harness:abf028f@sha256:bdc4325691084e2cbc5e4ba4c01bb9e3ea45be5264fb081682b1c48f1864b1e8
 # Its roles as pyproject.toml declares them (a JSON list's items), so the
 # harness launches it as `meridian plugin upload` would; and the e2e's reader
 # (e2e/reader.py) beside it, holding `custody` beside `reporting` to resolve
