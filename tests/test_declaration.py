@@ -8,7 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from kraken.declaration import CATALOGUE, DECLARATION, SAMPLE_DATA
+from kraken.declaration import DECLARATION
+from kraken.declared import CATALOGUE, SAMPLE_DATA
 
 
 def test_three_datasets_daily_live_and_trades_on_the_utc_day() -> None:

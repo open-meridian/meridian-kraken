@@ -39,16 +39,23 @@ CLI_CONTEXT := $(if $(MERIDIAN_BIN),--build-context cli=$(MERIDIAN_BIN),)
 # contract version changes.
 # `make e2e RUNTIME_IMAGE=...:latest HARNESS_IMAGE=...:latest` tries a newer
 # core; e2e-latest.yaml does that weekly.
-RUNTIME_IMAGE ?= ghcr.io/open-meridian/meridian-runtime:8774368@sha256:30bc55de3702ffa76b5a8e7c36cb0fe65aa819dd1b7d167cecdd5fe59540c5db
-HARNESS_IMAGE ?= ghcr.io/open-meridian/meridian-harness:8774368@sha256:c1db335cecdc42c3eed10e916e8c600483b73eef5830e100c35411653196a5ac
+# Core abf028f (merged as fc3f0d1), contract v25, as published with chart 0.1.306.
+RUNTIME_IMAGE ?= ghcr.io/open-meridian/meridian-runtime:abf028f@sha256:67c765c3c8234d942fa18b95a2d18cbc96358853ed27a730a2f057a15625d3c9
+HARNESS_IMAGE ?= ghcr.io/open-meridian/meridian-harness:abf028f@sha256:bdc4325691084e2cbc5e4ba4c01bb9e3ea45be5264fb081682b1c48f1864b1e8
 # Its roles as pyproject.toml declares them (a JSON list's items), so the
 # harness launches it as `meridian plugin upload` would; and the e2e's reader
 # (e2e/reader.py) beside it, holding `custody` beside `reporting` to resolve
 # a custodian's records, and `signal` to read and hear trades and quotes
 # (contract v19), run from the same image.
 ROLES := $(shell sed -n 's/^roles *= *\[\(.*\)\]/\1/p' pyproject.toml | tr -d ' ')
-PLUGINS := [{"instance": "$(PLUGIN)", "image": "$(IMAGE)", "roles": [$(ROLES)]}, \
-            {"instance": "reader", "image": "$(IMAGE)", "roles": ["custody", "reporting", "signal"]}]
+# The declaration [tool.meridian] names (contract v25): `make e2e` prints it
+# from the image under test, as `meridian plugin upload` reads it, and the
+# harness holds the plugin's registration to it (its README, `declaration`).
+# Each stand-in's the same, its directory mounted as it runs.
+DECLARATION_REF := $(shell sed -n 's/^declaration *= *"\(.*\)"/\1/p' pyproject.toml)
+DECLARE := docker run --rm --network none --entrypoint meridian-declaration
+PLUGINS := [{"instance": "$(PLUGIN)", "image": "$(IMAGE)", "roles": [$(ROLES)], "declaration": "declaration.json"}, \
+            {"instance": "reader", "image": "$(IMAGE)", "roles": ["custody", "reporting", "signal"], "declaration": "reader.json"}]
 # What the compose files read: the runtime, and this repository's e2e/.
 export MERIDIAN_RUNTIME_IMAGE := $(RUNTIME_IMAGE)
 export E2E_DIR := $(CURDIR)/e2e
@@ -133,8 +140,8 @@ image:
 		"import meridian, $(PLUGIN).__main__, $(PLUGIN).page; from importlib import resources; \
 		 assert any(f.name.endswith('.json') for f in (resources.files('$(PLUGIN)') / 'synthetic').iterdir())" \
 		|| { echo "image FAILED: it does not import the SDK and itself, with its synthetic exchanges" >&2; exit 1; }
-	@[ -z "$$(docker run --rm --entrypoint sh $(IMAGE) -c 'ls -A /plugin')" ] \
-		|| { echo "image FAILED: /plugin holds files; only the installed package belongs" >&2; exit 1; }
+	@[ "$$(docker run --rm --entrypoint sh $(IMAGE) -c 'ls -A /plugin')" = "docs" ] \
+		|| { echo "image FAILED: /plugin holds files beyond docs/; only the installed package and its documentation belong" >&2; exit 1; }
 	@echo "image OK: $(IMAGE) on $(BASE), $$(docker image inspect -f '{{.Size}}' $(IMAGE) | awk '{printf "%.0f MB", $$1/1e6}')"
 
 # The plugin, with sample data, on the plugin harness published with the
@@ -168,11 +175,15 @@ e2e-run:
 	@# The harness is taken down, and its copy removed, however the run ends:
 	@# `meridian plugin check` reads every source file under this directory.
 	@trap '$(E2E) $(E2E_FILES) logs --no-color >.e2e/components.log 2>&1; \
-		$(E2E) $(E2E_FILES) down -v --remove-orphans >>.e2e/components.log 2>&1; rm -rf .e2e/harness' EXIT; \
+		$(E2E) $(E2E_FILES) --profile runner down -v --remove-orphans >>.e2e/components.log 2>&1; rm -rf .e2e/harness' EXIT; \
 	id="$$(docker create $(HARNESS_IMAGE) none 2>>.e2e/components.log)" \
 		&& docker cp "$$id:/harness" .e2e/harness >/dev/null \
 		&& docker rm "$$id" >/dev/null \
 		|| { echo "e2e FAILED: no plugin harness at /harness in $(HARNESS_IMAGE)" >&2; trap - EXIT; exit 1; }; \
+	$(DECLARE) $(IMAGE) $(DECLARATION_REF) >.e2e/harness/declaration.json 2>>.e2e/components.log \
+		|| { echo "e2e FAILED: meridian-declaration did not print $(DECLARATION_REF) (declaration.json)" >&2; exit 1; }; \
+	$(DECLARE) -v "$(CURDIR)/e2e":/e2e:ro -e PYTHONPATH=/e2e $(IMAGE) reader:DECLARATION >.e2e/harness/reader.json 2>>.e2e/components.log \
+		|| { echo "e2e FAILED: meridian-declaration did not print reader:DECLARATION (reader.json)" >&2; exit 1; }; \
 	printf '%s\n' '$(PLUGINS)' >.e2e/plugins.json; \
 	docker run --rm -i -v "$(CURDIR)/.e2e/harness":/harness:ro python:3.12-alpine \
 		python /harness/harness.py compose <.e2e/plugins.json >.e2e/harness/plugins.yaml 2>>.e2e/components.log \

@@ -160,6 +160,9 @@ NOT_PRESENTED = {
     "asks-for-a-settlement-date": (
         "records prices, bars and trades as Kraken publishes them; never computes a settlement date"
     ),
+    "records-an-outcome": "Kraken lists no event contract: no outcome to record",
+    "restates-a-disputed-outcome": "Kraken lists no event contract: no outcome disputed",
+    "records-a-partial-payout": "Kraken lists no event contract: no payout to settle",
 }
 #: A restart's gap (contract v20): the last trade the lake holds of BASE's
 #: dollar pair, by its pair, trade ID and time; and the trades the venue's

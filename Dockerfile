@@ -9,11 +9,15 @@
 # BASE is for building against a base made locally rather than a released one:
 # `make image` builds plugin-python:<version>-local from the sibling
 # meridian-python while that version is not published.
-ARG BASE=ghcr.io/open-meridian/plugin-python:0.26.0
+ARG BASE=ghcr.io/open-meridian/plugin-python:0.29.0
 FROM ${BASE}
 WORKDIR /plugin
 # Installed from a mount rather than copied, so the image holds the installed
 # package and no source beside it.
 RUN --mount=type=bind,target=/tmp/src,rw pip install --no-cache-dir /tmp/src
+# The vendor's documentation (contract v25): the declaration names docs/,
+# relative to where the plugin runs, /plugin, and `meridian-declaration`
+# reads it there when `meridian plugin upload` prints the declaration.
+COPY docs/ docs/
 USER 65532
 CMD ["kraken"]

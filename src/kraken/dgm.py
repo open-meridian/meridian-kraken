@@ -365,13 +365,21 @@ class Dgm:
             )
         return named
 
+    @staticmethod
+    def described(asset: Asset) -> str:
+        """What the venue states an asset is called: its own name where it
+        gives one (Coinbase's), else its code, the only name Kraken states.
+        A resolve that may mint states a description (contract v24, W3.7):
+        a token with no global identifier, named by none, is not found."""
+        return asset.name or asset.code
+
     async def _resolve(self, asset: Asset, now: int) -> None:
         cash = asset.kind == "currency"
         found = await self.plugin.resolve_identifier(
             identifiers=self.identifiers(asset),
             as_of_ns=now,
             stated_asset_class="cash" if cash else "crypto_asset",
-            stated_description=asset.name,
+            stated_description=self.described(asset),
         )
         if found.found and found.instrument_id:
             self.products.ids[asset.code] = found.instrument_id
@@ -447,7 +455,7 @@ class Dgm:
             identifiers=named,
             as_of_ns=now,
             stated_asset_class="cash" if cash else "crypto_asset",
-            stated_description=asset.name,
+            stated_description=self.described(asset),
         )
         if found.found and found.instrument_id == subject:
             return
